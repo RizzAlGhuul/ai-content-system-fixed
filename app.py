@@ -5,11 +5,11 @@ import json
 import logging
 from flask import Flask, jsonify, render_template, request
 from openai import OpenAI
-from elevenlabs import VoiceSettings, save
 from elevenlabs.client import ElevenLabs
+from elevenlabs import VoiceSettings
 from pytrends.request import TrendReq
 from dotenv import load_dotenv
-from moviepy import VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip
+from moviepy.editor import VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip
 from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -17,178 +17,175 @@ load_dotenv()  # Load .env for local dev
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
+logging.info("Starting app initialization...")
 
 # API Keys and configs from env vars
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY')
 RUNWAY_API_KEY = os.getenv('RUNWAY_API_KEY')
 AYRSHARE_API_KEY = os.getenv('AYRSHARE_API_KEY')
-NICHE = os.getenv('NICHE', 'tech')  # Niche for targeting trends
-AFFILIATE_LINK = os.getenv('AFFILIATE_LINK', 'https://example.com/aff')  # Affiliate link
+NICHE = os.getenv('NICHE', 'personal finance')
+AFFILIATE_LINK = os.getenv('AFFILIATE_LINK', 'https://example.com/aff')
 
-# Initialize OpenAI client
+# Validate keys
+if not all([OPENAI_API_KEY, ELEVENLABS_API_KEY, RUNWAY_API_KEY, AYRSHARE_API_KEY]):
+    logging.error("Missing one or more API keys in environment variables")
+    raise ValueError("Missing API keys")
+
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
-
-# Initialize ElevenLabs client
-elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY) if ELEVENLABS_API_KEY else None
+elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
 
 # Temp file prefix for Heroku
 TEMP_DIR = '/tmp/' if 'DYNO' in os.environ else ''
 
-# Scheduler for automated runs (e.g., twice daily)
+# Scheduler for automated runs
 scheduler = BackgroundScheduler()
-scheduler.add_job(lambda: generate_content(num_trends=3), 'cron', hour='8,16')  # Run at 8 AM and 4 PM UTC
+scheduler.add_job(lambda: generate_content(num_trends=3), 'cron', hour='8,16')
 scheduler.start()
+logging.info("Scheduler initialized")
+
+def verify_quality(output_type, content):
+    """Quality check agent using OpenAI."""
+    logging.info(f"Verifying quality for {output_type}")
+    prompt = f"Review this {output_type} for quality in {NICHE} niche: {content}. Score 1-10 for relevance, engagement, monetization potential. Output JSON: 'score' (int), 'feedback' (string)."
+    response = openai_client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"}
+    )
+    result = json.loads(response.choices[0].message.content)
+    return result.get('score', 5), result.get('feedback', '')
 
 @app.route('/')
 def home():
-    return render_template('index.html')  # Simple UI dashboard
+    logging.info("Home endpoint accessed")
+    return render_template('index.html')
 
 @app.route('/generate', methods=['GET', 'POST'])
-def generate_content(num_trends=1):  # Allow multiple trends
+def generate_content(num_trends=1):
     results = []
     try:
-        # Step 1: Fetch and filter Trends by niche with fallback
-        try:
-            pytrends = TrendReq(hl='en-US', tz=360, timeout=(10,25), retries=2, backoff_factor=0.1)
-            trends_data = pytrends.trending_searches(pn='united_states')
-            if not trends_data.empty:
-                trends = trends_data.iloc[:, 0].tolist()[:20]
-                # Filter for tech-related trends
-                tech_keywords = ['ai', 'tech', 'software', 'app', 'digital', 'cyber', 'data', 'cloud', 'automation', 'productivity']
-                filtered_trends = []
-                for trend in trends:
-                    if any(keyword in trend.lower() for keyword in tech_keywords):
-                        filtered_trends.append(trend)
-                
-                if not filtered_trends:
-                    # Fallback to predefined trending topics
-                    filtered_trends = [
-                        "AI productivity tools 2024",
-                        "ChatGPT coding tricks", 
-                        "Cybersecurity tips",
-                        "Tech startup ideas"
-                    ]
-            else:
-                raise Exception("No trends returned")
-        except Exception as e:
-            logging.warning(f"PyTrends failed: {e}, using fallback trends")
-            filtered_trends = [
-                "AI productivity tools 2024",
-                "ChatGPT coding tricks",
-                "Cybersecurity tips", 
-                "Software development tools",
-                "Tech trends 2024"
-            ]
-        
+        logging.info("Starting content generation")
+        # Step 1: Fetch and filter Trends
+        pytrends = TrendReq(hl='en-US', tz=360)
+        trends = pytrends.trending_searches(pn='united_states')[:10]
+        filtered_trends = [t for t in trends.iloc[:, 0].tolist() if NICHE.lower() in t.lower()] or ["Fallback trend in " + NICHE]
         trends_to_use = filtered_trends[:num_trends]
 
         for trend in trends_to_use:
             logging.info(f"Processing trend: {trend}")
 
-            # Step 2: Analyze Trend with enhanced prompt
-            analysis_prompt = f"""
-            Analyze '{trend}' in {NICHE} niche for short-form video. 
-            Output JSON: "script" (15-30s with hook in first 3s, CTA, affiliate link: {AFFILIATE_LINK}), 
-            "title" (SEO-optimized), "description" (with hashtags and link), "hashtags" (list of 5 trending).
-            """
-            analysis_response = openai_client.chat.completions.create(
-                model="gpt-4.1-mini",
-                messages=[{"role": "user", "content": analysis_prompt}],
-                response_format={"type": "json_object"}
-            )
-            analysis_json = json.loads(analysis_response.choices[0].message.content)
-            script = analysis_json.get('script', "Default script")
-            title = analysis_json.get('title', "Trend Video")
-            desc = analysis_json.get('description', "Based on trending topic") + f"\n{AFFILIATE_LINK}"
-            hashtags = analysis_json.get('hashtags', [])
+            # Step 2: Analyze Trend with retries
+            retries = 0
+            while retries < 3:
+                analysis_prompt = f"""
+                Analyze '{trend}' in {NICHE} niche for short-form video. 
+                Output JSON: "script" (15-30s with hook in first 3s, CTA, affiliate: {AFFILIATE_LINK}), 
+                "title", "description", "hashtags" (list of 5 trending).
+                """
+                analysis_response = openai_client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[{"role": "user", "content": analysis_prompt}],
+                    response_format={"type": "json_object"}
+                )
+                analysis_json = json.loads(analysis_response.choices[0].message.content)
+                script = analysis_json.get('script', "Default script")
+                title = analysis_json.get('title', "Trend Video")
+                desc = analysis_json.get('description', "Based on trending topic") + f"\n{AFFILIATE_LINK}"
+                hashtags = analysis_json.get('hashtags', [])
+
+                score, feedback = verify_quality("script analysis", script + " " + desc)
+                logging.info(f"Analysis quality score: {score}, feedback: {feedback}")
+                if score >= 7:
+                    break
+                retries += 1
+                logging.warning(f"Low quality ({score}/10), retrying analysis...")
+
+            if score < 7:
+                logging.error(f"Failed quality check for trend: {trend}")
+                continue
 
             # Step 3: Generate Voiceover
-           from elevenlabs.client import ElevenLabs
-           from elevenlabs import VoiceSettings  # Keep if using, but it's optional in v1.x
-
-           # In generate_content (Step 3):
-          client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
-
-          audio_stream = client.text_to_speech.convert(
-           text=script,
-           voice_id="21m00Tcm4TlvDq8ikWAM",  # Use 'Rachel' ID from ElevenLabs dashboard (confirm yours)
-           model_id="eleven_turbo_v2",
-           voice_settings=VoiceSettings(stability=0.5, similarity_boost=0.75, style=0.0, use_speaker_boost=True),
-           output_format="mp3_44100_128"  # Or your preferred format
-  )
-
+            logging.info("Generating voiceover")
+            audio_stream = elevenlabs_client.text_to_speech.convert(
+                text=script,
+                voice_id="21m00Tcm4TlvDq8ikWAM",  # Rachel's ID; verify in ElevenLabs dashboard
+                model_id="eleven_turbo_v2",
+                voice_settings=VoiceSettings(stability=0.5, similarity_boost=0.75, style=0.0, use_speaker_boost=True),
+                output_format="mp3_44100_128"
+            )
             audio_path = TEMP_DIR + "voiceover.mp3"
             with open(audio_path, "wb") as f:
-            for chunk in audio_stream:
-            if chunk:
-            f.write(chunk)           
+                for chunk in audio_stream:
+                    if chunk:
+                        f.write(chunk)
 
             # Step 4: Generate Image then Video with Runway
-            headers = {"Authorization": f"Bearer {RUNWAY_API_KEY}", "Content-Type": "application/json", "X-Runway-Version": "2024-11-06"}
-
-            # 4.1: Text-to-Image
-            image_payload = {"promptText": script, "model": "gen4_image", "ratio": "9:16"}
-            image_response = requests.post("https://api.dev.runwayml.com/v1/text_to_image", json=image_payload, headers=headers)
+            headers = {"Authorization": f"Bearer {RUNWAY_API_KEY}", "Content-Type": "application/json"}
+            logging.info("Starting Runway image generation")
+            image_payload = {"text": script, "model": "gen-4-turbo", "aspect_ratio": "9:16"}
+            image_response = requests.post("https://api.runwayml.com/v1/text_to_image", json=image_payload, headers=headers)
             image_response.raise_for_status()
             image_task_id = image_response.json().get("id")
             max_attempts = 60
             image_url = None
             for _ in range(max_attempts):
-                poll_response = requests.get(f"https://api.dev.runwayml.com/v1/tasks/{image_task_id}", headers=headers)
+                poll_response = requests.get(f"https://api.runwayml.com/v1/tasks/{image_task_id}", headers=headers)
                 poll_response.raise_for_status()
                 task_data = poll_response.json()
-                if task_data.get("status") == "SUCCEEDED":
-                    image_url = task_data.get("output", [{}])[0]
+                if task_data.get("status") == "succeeded":
+                    image_url = task_data.get("output", [{}])[0].get("url")
                     break
-                elif task_data.get("status") == "FAILED":
-                    raise ValueError(f"Image task failed: {task_data.get('failure', {}).get('reason', 'Unknown error')}")
+                elif task_data.get("status") == "failed":
+                    raise ValueError(f"Image task failed: {task_data.get('error')}")
                 time.sleep(10)
             if not image_url:
                 raise TimeoutError("Image generation timed out")
 
-            # 4.2: Image-to-Video
-            video_payload = {"promptImage": image_url, "promptText": script, "model": "gen3a_turbo", "duration": 15, "ratio": "9:16"}
-            video_response = requests.post("https://api.dev.runwayml.com/v1/image_to_video", json=video_payload, headers=headers)
+            logging.info("Starting Runway video generation")
+            video_payload = {"image": image_url, "text": script, "model": "gen-4-turbo", "duration_seconds": 15, "aspect_ratio": "9:16"}
+            video_response = requests.post("https://api.runwayml.com/v1/image_to_video", json=video_payload, headers=headers)
             video_response.raise_for_status()
             video_task_id = video_response.json().get("id")
             video_url = None
             for _ in range(max_attempts):
-                poll_response = requests.get(f"https://api.dev.runwayml.com/v1/tasks/{video_task_id}", headers=headers)
+                poll_response = requests.get(f"https://api.runwayml.com/v1/tasks/{video_task_id}", headers=headers)
                 poll_response.raise_for_status()
                 task_data = poll_response.json()
-                if task_data.get("status") == "SUCCEEDED":
-                    video_url = task_data.get("output", [{}])[0]
+                if task_data.get("status") == "succeeded":
+                    video_url = task_data.get("output", [{}])[0].get("url")
                     break
-                elif task_data.get("status") == "FAILED":
-                    raise ValueError(f"Video task failed: {task_data.get('failure', {}).get('reason', 'Unknown error')}")
+                elif task_data.get("status") == "failed":
+                    raise ValueError(f"Video task failed: {task_data.get('error')}")
                 time.sleep(10)
             if not video_url:
                 raise TimeoutError("Video generation timed out")
 
-            # Download video
             video_path = TEMP_DIR + "video.mp4"
             with open(video_path, "wb") as f:
                 f.write(requests.get(video_url).content)
 
             # Step 5: Merge audio, video, and add captions
+            logging.info("Merging video and audio")
             video_clip = VideoFileClip(video_path)
-            
-            # Handle audio if available
-            if audio_path and os.path.exists(audio_path):
-                audio_clip = AudioFileClip(audio_path).subclip(0, min(video_clip.duration, AudioFileClip(audio_path).duration))
-                video_clip = video_clip.set_audio(audio_clip)
-            
+            audio_clip = AudioFileClip(audio_path).subclip(0, min(video_clip.duration, audio_clip.duration))
             caption_clip = TextClip("Trend: " + trend, fontsize=24, color='white').set_position('bottom').set_duration(video_clip.duration)
-            merged_clip = CompositeVideoClip([video_clip, caption_clip])
+            merged_clip = CompositeVideoClip([video_clip.set_audio(audio_clip), caption_clip])
             merged_path = TEMP_DIR + "merged.mp4"
             merged_clip.write_videofile(merged_path, codec="libx264", audio_codec="aac")
 
-            # File size check
+            video_desc = f"Video based on script: {script}"
+            video_score, video_feedback = verify_quality("video content", video_desc)
+            logging.info(f"Video quality score: {video_score}, feedback: {video_feedback}")
+            if video_score < 7:
+                logging.warning(f"Low video quality ({video_score}/10), skipping post")
+                continue
+
             if os.path.getsize(merged_path) > 10 * 1024 * 1024:
                 raise ValueError("Video too large")
 
             # Step 6: Upload to Ayrshare
+            logging.info("Uploading to Ayrshare")
             upload_url = "https://api.ayrshare.com/api/media/upload"
             upload_headers = {"Authorization": f"Bearer {AYRSHARE_API_KEY}"}
             files = {'file': open(merged_path, 'rb'), 'fileName': (None, 'trend_video.mp4'), 'description': (None, desc)}
@@ -197,6 +194,7 @@ def generate_content(num_trends=1):  # Allow multiple trends
             media_url = upload_response.json().get('url')
 
             # Step 7: Post with Ayrshare
+            logging.info("Scheduling post")
             optimal_time = (datetime.utcnow() + timedelta(days=1)).replace(hour=16, minute=0, second=0, microsecond=0).isoformat() + 'Z'
             post_payload = {
                 "post": desc,
@@ -209,12 +207,7 @@ def generate_content(num_trends=1):  # Allow multiple trends
             ayrshare_headers = {"Authorization": f"Bearer {AYRSHARE_API_KEY}", "Content-Type": "application/json"}
             post_response = requests.post(ayrshare_url, json=post_payload, headers=ayrshare_headers).json()
 
-            # Cleanup
-            cleanup_paths = [video_path, merged_path]
-            if audio_path:
-                cleanup_paths.append(audio_path)
-            
-            for path in cleanup_paths:
+            for path in [audio_path, video_path, merged_path]:
                 if os.path.exists(path):
                     os.remove(path)
 
@@ -222,36 +215,26 @@ def generate_content(num_trends=1):  # Allow multiple trends
 
         return jsonify({"status": "success", "results": results})
     except Exception as e:
-        logging.error(f"Error: {str(e)}")
+        logging.error(f"Error in generate_content: {str(e)}")
         return jsonify({"status": "error", "message": str(e)})
 
 @app.route('/analytics')
 def get_analytics():
     try:
+        logging.info("Fetching analytics")
         analytics_url = "https://app.ayrshare.com/api/analytics/post"
         response = requests.get(analytics_url, headers={"Authorization": f"Bearer {AYRSHARE_API_KEY}"}).json()
-        # Optional: Analyze with OpenAI for insights
-        insights_prompt = f"Analyze these analytics: {json.dumps(response)}. Suggest improvements for next videos."
+        insights_prompt = f"Analyze these analytics: {json.dumps(response)}. Suggest improvements for next videos in {NICHE} niche."
         insights_response = openai_client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model="gpt-4o",
             messages=[{"role": "user", "content": insights_prompt}]
         )
         insights = insights_response.choices[0].message.content
         return jsonify({"analytics": response, "insights": insights})
     except Exception as e:
+        logging.error(f"Error in analytics: {str(e)}")
         return jsonify({"error": str(e)})
 
-@app.route('/status')
-def status():
-    """Simple status endpoint"""
-    return jsonify({
-        "status": "operational",
-        "system": "AI Content Automation",
-        "version": "2.0.0",
-        "features": ["trend_detection", "video_generation", "auto_posting", "analytics"]
-    })
-
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
-
+    logging.info("Starting Flask app")
+    app.run(debug=True)
