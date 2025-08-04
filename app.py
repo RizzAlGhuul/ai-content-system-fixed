@@ -104,19 +104,22 @@ def generate_content(num_trends=1):  # Allow multiple trends
             hashtags = analysis_json.get('hashtags', [])
 
             # Step 3: Generate Voiceover
-            if elevenlabs_client:
-                audio = elevenlabs_client.text_to_speech.convert(
-                    text=script,
-                    voice_id="21m00Tcm4TlvDq8ikWAM",  # Rachel voice ID
-                    model_id="eleven_turbo_v2",
-                    voice_settings=VoiceSettings(stability=0.5, similarity_boost=0.75, style=0.0, use_speaker_boost=True)
-                )
-                audio_path = TEMP_DIR + "voiceover.mp3"
-                save(audio, audio_path)
-            else:
-                # Fallback: create silent audio or skip voice generation
-                audio_path = None
-                logging.warning("ElevenLabs API key not set, skipping voice generation")
+            from elevenlabs.client import client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+
+audio_stream = client.text_to_speech.convert(
+    text=script,
+    voice_id="Rachel",  # Use voice ID (find in ElevenLabs dashboard; 'Rachel' may map to a specific ID like '21m00Tcm4TlvDq8ikWAM')
+    model_id="eleven_turbo_v2",
+    voice_settings=VoiceSettings(stability=0.5, similarity_boost=0.75, style=0.0, use_speaker_boost=True),
+    output_format="mp3_44100_128"  # Adjust format as needed
+)
+
+audio_path = TEMP_DIR + "voiceover.mp3"
+with open(audio_path, "wb") as f:
+    for chunk in audio_stream:  # It's a stream, so iterate and write
+        if chunk:
+            f.write(chunk)
+           
 
             # Step 4: Generate Image then Video with Runway
             headers = {"Authorization": f"Bearer {RUNWAY_API_KEY}", "Content-Type": "application/json", "X-Runway-Version": "2024-11-06"}
