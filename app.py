@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from moviepy.editor import VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip
 from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
+from runwayml import RunwayML  # Import Runway SDK
 
 load_dotenv()  # Load .env for local dev
 
@@ -42,6 +43,13 @@ except Exception as e:
 
 logging.info("Initializing ElevenLabs client...")
 elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+
+logging.info("Initializing Runway client...")
+try:
+    runway_client = RunwayML(api_key=RUNWAY_API_KEY)
+except Exception as e:
+    logging.error(f"Failed to initialize Runway client: {str(e)}")
+    raise
 
 # Temp file prefix for Heroku
 TEMP_DIR = '/tmp/' if 'DYNO' in os.environ else ''
@@ -90,7 +98,7 @@ def generate_content(num_trends=1):
                 time.sleep(5)  # Wait before retrying
         if not trends or trends.empty:
             logging.error("No trends from PyTrends; using fallback")
-            trends = ["Investment tips 2025", "How to save money fast", "Passive income ideas"]  # Fallback trends
+            trends = ["Investment tips 2025", "How to save money fast", "Passive income ideas"]
         else:
             trends = trends.iloc[:, 0].tolist()
         filtered_trends = [t for t in trends if NICHE.lower() in t.lower()] or ["Fallback trend in " + NICHE]
@@ -113,7 +121,7 @@ def generate_content(num_trends=1):
                     response_format={"type": "json_object"}
                 )
                 analysis_json = json.loads(analysis_response.choices[0].message.content)
-                script = analysis_json.get('script', "Default script")
+                script = analysis_json.get('script', "Default script")[:2048]  # Trim to 2048 chars
                 title = analysis_json.get('title', "Trend Video")
                 desc = analysis_json.get('description', "Based on trending topic") + f"\n{AFFILIATE_LINK}"
                 hashtags = analysis_json.get('hashtags', [])
@@ -129,7 +137,7 @@ def generate_content(num_trends=1):
                 logging.error(f"Failed quality check for trend: {trend}")
                 continue
 
-            logging.info(f"Generated script: {script}")  # Log script for debugging
+            logging.info(f"Generated script: {script}")
 
             # Step 3: Generate Voiceover
             logging.info("Generating voiceover")
@@ -146,72 +154,37 @@ def generate_content(num_trends=1):
                     if chunk:
                         f.write(chunk)
 
-            # Step 4: Generate Image then Video with Runway
-            headers = {"Authorization": f"Bearer {RUNWAY_API_KEY}", "Content-Type": "application/json"}
+            # Step 4: Generate Image then Video with Runway using SDK
             logging.info("Starting Runway image generation")
-            image_payload = {
-                "promptText": script,
-                "model": "gen4_image",
-                "ratio": "720:1280"
-            }
-            logging.info(f"Runway image payload: {json.dumps(image_payload)}")  # Log payload
             try:
-                image_response = requests.post("https://api.runway.team/v1/text_to_image", json=image_payload, headers=headers)
-                image_response.raise_for_status()
-                image_task_id = image_response.json().get("id")
-            except requests.exceptions.HTTPError as e:
-                logging.error(f"Runway image request failed: {e.response.text}")
-                raise
-
-            max_attempts = 60
-            image_url = None
-            for _ in range(max_attempts):
-                poll_response = requests.get(f"https://api.runway.team/v1/tasks/{image_task_id}", headers=headers)
-                poll_response.raise_for_status()
-                task_data = poll_response.json()
-                logging.info(f"Runway image task status: {task_data.get('status')}")  # Log status
-                if task_data.get("status") == "SUCCEEDED":
-                    image_url = task_data.get("output", [{}])[0]  # Use 'output' per output doc
-                    break
-                elif task_data.get("status") == "FAILED":
-                    logging.error(f"Image task failed: {task_data.get('error')}")
-                    raise ValueError(f"Image task failed: {task_data.get('error')}")
-                time.sleep(10)
-            if not image_url:
-                raise TimeoutError("Image generation timed out")
+                image_task = runway_client.textToImage.create(
+                    model='gen4_image',
+                    promptText=script,
+                    ratio='720:1280'
+                )
+                image_task_id = image_task.id
+                image_task_output = image_task.waitForTaskOutput()
+                image_url = image_task_output.output[0]
+            except Exception as e:
+                logging.error(f"Runway image generation failed: {str(e)}")
+                logging.warning("Using fallback image due to Runway failure")
+                image_url = "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?ixlib=rb-4.0.3&auto=format&fit=crop&w=720&h=1280&q=80"  # Valid HTTPS image
 
             logging.info("Starting Runway video generation")
-            video_payload = {
-                "image": image_url,
-                "text": script,
-                "model": "gen4_image",
-                "duration": 15,
-                "ratio": "720:1280"
-            }
-            logging.info(f"Runway video payload: {json.dumps(video_payload)}")  # Log payload
             try:
-                video_response = requests.post("https://api.runway.team/v1/image_to_video", json=video_payload, headers=headers)
-                video_response.raise_for_status()
-                video_task_id = video_response.json().get("id")
-            except requests.exceptions.HTTPError as e:
-                logging.error(f"Runway video request failed: {e.response.text}")
+                video_task = runway_client.imageToVideo.create(
+                    image=image_url,
+                    text=script,
+                    model='gen4_image',
+                    duration=15,
+                    ratio='720:1280'
+                )
+                video_task_id = video_task.id
+                video_task_output = video_task.waitForTaskOutput()
+                video_url = video_task_output.output[0]
+            except Exception as e:
+                logging.error(f"Runway video generation failed: {str(e)}")
                 raise
-
-            video_url = None
-            for _ in range(max_attempts):
-                poll_response = requests.get(f"https://api.runway.team/v1/tasks/{video_task_id}", headers=headers)
-                poll_response.raise_for_status()
-                task_data = poll_response.json()
-                logging.info(f"Runway video task status: {task_data.get('status')}")  # Log status
-                if task_data.get("status") == "SUCCEEDED":
-                    video_url = task_data.get("output", [{}])[0]  # Use 'output' per output doc
-                    break
-                elif task_data.get("status") == "FAILED":
-                    logging.error(f"Video task failed: {task_data.get('error')}")
-                    raise ValueError(f"Video task failed: {task_data.get('error')}")
-                time.sleep(10)
-            if not video_url:
-                raise TimeoutError("Video generation timed out")
 
             video_path = TEMP_DIR + "video.mp4"
             with open(video_path, "wb") as f:
