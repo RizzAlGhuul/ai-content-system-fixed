@@ -148,14 +148,14 @@ def generate_content(num_trends=1):
             headers = {"Authorization": f"Bearer {RUNWAY_API_KEY}", "Content-Type": "application/json"}
             logging.info("Starting Runway image generation")
             image_payload = {
-                "prompt": script,  # Use 'prompt' as per Runway API
-                "model": "gen3a",  # Use known Gen-3 Alpha model
+                "prompt": script,
+                "model": "gen-3-alpha",  # Updated to match Runway's Gen-3 Alpha
                 "aspect_ratio": "9:16",
-                "width": 720,  # Explicit dimensions for stability
+                "width": 720,
                 "height": 1280
             }
             try:
-                image_response = requests.post("https://api.runwayml.com/v1/text_to_image", json=image_payload, headers=headers)
+                image_response = requests.post("https://api.runwayml.com/generations/image", json=image_payload, headers=headers)
                 image_response.raise_for_status()
                 image_task_id = image_response.json().get("id")
             except requests.exceptions.HTTPError as e:
@@ -165,7 +165,7 @@ def generate_content(num_trends=1):
             max_attempts = 60
             image_url = None
             for _ in range(max_attempts):
-                poll_response = requests.get(f"https://api.runwayml.com/v1/tasks/{image_task_id}", headers=headers)
+                poll_response = requests.get(f"https://api.runwayml.com/generations/{image_task_id}", headers=headers)
                 poll_response.raise_for_status()
                 task_data = poll_response.json()
                 if task_data.get("status") == "succeeded":
@@ -182,14 +182,14 @@ def generate_content(num_trends=1):
             video_payload = {
                 "image_url": image_url,
                 "prompt": script,
-                "model": "gen3a",
+                "model": "gen-3-alpha",
                 "duration": 15,
                 "aspect_ratio": "9:16",
                 "width": 720,
                 "height": 1280
             }
             try:
-                video_response = requests.post("https://api.runwayml.com/v1/image_to_video", json=video_payload, headers=headers)
+                video_response = requests.post("https://api.runwayml.com/generations/video", json=video_payload, headers=headers)
                 video_response.raise_for_status()
                 video_task_id = video_response.json().get("id")
             except requests.exceptions.HTTPError as e:
@@ -198,7 +198,7 @@ def generate_content(num_trends=1):
 
             video_url = None
             for _ in range(max_attempts):
-                poll_response = requests.get(f"https://api.runwayml.com/v1/tasks/{video_task_id}", headers=headers)
+                poll_response = requests.get(f"https://api.runwayml.com/generations/{video_task_id}", headers=headers)
                 poll_response.raise_for_status()
                 task_data = poll_response.json()
                 if task_data.get("status") == "succeeded":
@@ -208,7 +208,7 @@ def generate_content(num_trends=1):
                     logging.error(f"Video task failed: {task_data.get('error')}")
                     raise ValueError(f"Video task failed: {task_data.get('error')}")
                 time.sleep(10)
-            if not video_url:
+            if not image_url:
                 raise TimeoutError("Video generation timed out")
 
             video_path = TEMP_DIR + "video.mp4"
@@ -282,9 +282,4 @@ def get_analytics():
         insights = insights_response.choices[0].message.content
         return jsonify({"analytics": response, "insights": insights})
     except Exception as e:
-        logging.error(f"Error in analytics: {str(e)}")
-        return jsonify({"error": str(e)})
-
-if __name__ == '__main__':
-    logging.info("Starting Flask app")
-    app.run(debug=True)
+        logging.error(f"Error
