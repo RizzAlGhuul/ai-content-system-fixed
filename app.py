@@ -121,7 +121,7 @@ def generate_content(num_trends=1):
                     response_format={"type": "json_object"}
                 )
                 analysis_json = json.loads(analysis_response.choices[0].message.content)
-                script = analysis_json.get('script', "Default script")[:2048]  # Trim to 2048 chars
+                script = analysis_json.get('script', "Default script")[:2048]
                 title = analysis_json.get('title', "Trend Video")
                 desc = analysis_json.get('description', "Based on trending topic") + f"\n{AFFILIATE_LINK}"
                 hashtags = analysis_json.get('hashtags', [])
@@ -143,7 +143,7 @@ def generate_content(num_trends=1):
             logging.info("Generating voiceover")
             audio_stream = elevenlabs_client.text_to_speech.convert(
                 text=script,
-                voice_id="21m00Tcm4TlvDq8ikWAM",  # Rachel's ID; verify in ElevenLabs dashboard
+                voice_id="21m00Tcm4TlvDq8ikWAM",
                 model_id="eleven_turbo_v2",
                 voice_settings=VoiceSettings(stability=0.5, similarity_boost=0.75, style=0.0, use_speaker_boost=True),
                 output_format="mp3_44100_128"
@@ -163,7 +163,8 @@ def generate_content(num_trends=1):
                     ratio='720:1280'
                 )
                 image_task_id = image_task.id
-                image_task_output = image_task.waitForTaskOutput(timeout=5*60*1000)  # 5-minute timeout
+                logging.info(f"Runway image task ID: {image_task_id}")
+                image_task_output = image_task.waitForTaskOutput(timeout=5*60*1000)
                 image_url = image_task_output.output[0]
             except Exception as e:
                 logging.error(f"Runway image generation failed: {str(e)}")
@@ -180,7 +181,8 @@ def generate_content(num_trends=1):
                     ratio='720:1280'
                 )
                 video_task_id = video_task.id
-                video_task_output = video_task.waitForTaskOutput(timeout=5*60*1000)  # 5-minute timeout
+                logging.info(f"Runway video task ID: {video_task_id}")
+                video_task_output = video_task.waitForTaskOutput(timeout=5*60*1000)
                 video_url = video_task_output.output[0]
             except Exception as e:
                 logging.error(f"Runway video generation failed: {str(e)}")
