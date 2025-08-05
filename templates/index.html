@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Auto Content App</title>
+    <style>body { font-family: Arial; } button { padding: 10px; }</style>
+</head>
+<body>
+    <h1>Welcome to Your Automated Content Creator</h1>
+    <p>This app generates and posts short videos based on trends in your niche.</p>
+    <h2>Guides for Usability:</h2>
+    <ul>
+        <li>Set up API keys in Heroku Config Vars (OPENAI_API_KEY, etc.).</li>
+        <li>Configure NICHE and AFFILIATE_LINK for targeted content.</li>
+        <li>Trigger generation manually below or let the scheduler run daily.</li>
+        <li>View analytics to optimize: <a href="/analytics">Analytics Dashboard</a></li>
+    </ul>
+    <button onclick="fetch('/generate').then(res => res.json()).then(data => alert(JSON.stringify(data)));">Generate Videos Now</button>
+    <p>No built-in graphics beyond video generation; outputs are posted directly to platforms.</p>
+</body>
+</html>
