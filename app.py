@@ -28,17 +28,26 @@ NICHE = os.getenv('NICHE', 'personal finance')
 AFFILIATE_LINK = os.getenv('AFFILIATE_LINK', 'https://example.com/aff')
 
 # Validate keys
+logging.info("Checking API keys...")
 if not all([OPENAI_API_KEY, ELEVENLABS_API_KEY, RUNWAY_API_KEY, AYRSHARE_API_KEY]):
     logging.error("Missing one or more API keys in environment variables")
     raise ValueError("Missing API keys")
 
-openai_client = OpenAI(api_key=OPENAI_API_KEY)
+logging.info("Initializing OpenAI client...")
+try:
+    openai_client = OpenAI(api_key=OPENAI_API_KEY)
+except Exception as e:
+    logging.error(f"Failed to initialize OpenAI client: {str(e)}")
+    raise
+
+logging.info("Initializing ElevenLabs client...")
 elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
 
 # Temp file prefix for Heroku
 TEMP_DIR = '/tmp/' if 'DYNO' in os.environ else ''
 
 # Scheduler for automated runs
+logging.info("Setting up scheduler...")
 scheduler = BackgroundScheduler()
 scheduler.add_job(lambda: generate_content(num_trends=3), 'cron', hour='8,16')
 scheduler.start()
