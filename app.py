@@ -147,10 +147,21 @@ def generate_content(num_trends=1):
             # Step 4: Generate Image then Video with Runway
             headers = {"Authorization": f"Bearer {RUNWAY_API_KEY}", "Content-Type": "application/json"}
             logging.info("Starting Runway image generation")
-            image_payload = {"text": script, "model": "gen-4-turbo", "aspect_ratio": "9:16"}
-            image_response = requests.post("https://api.runwayml.com/v1/text_to_image", json=image_payload, headers=headers)
-            image_response.raise_for_status()
-            image_task_id = image_response.json().get("id")
+            image_payload = {
+                "prompt": script,  # Use 'prompt' as per Runway API
+                "model": "gen3a",  # Use known Gen-3 Alpha model
+                "aspect_ratio": "9:16",
+                "width": 720,  # Explicit dimensions for stability
+                "height": 1280
+            }
+            try:
+                image_response = requests.post("https://api.runwayml.com/v1/text_to_image", json=image_payload, headers=headers)
+                image_response.raise_for_status()
+                image_task_id = image_response.json().get("id")
+            except requests.exceptions.HTTPError as e:
+                logging.error(f"Runway image request failed: {e.response.text}")
+                raise
+
             max_attempts = 60
             image_url = None
             for _ in range(max_attempts):
@@ -161,16 +172,30 @@ def generate_content(num_trends=1):
                     image_url = task_data.get("output", [{}])[0].get("url")
                     break
                 elif task_data.get("status") == "failed":
+                    logging.error(f"Image task failed: {task_data.get('error')}")
                     raise ValueError(f"Image task failed: {task_data.get('error')}")
                 time.sleep(10)
             if not image_url:
                 raise TimeoutError("Image generation timed out")
 
             logging.info("Starting Runway video generation")
-            video_payload = {"image": image_url, "text": script, "model": "gen-4-turbo", "duration_seconds": 15, "aspect_ratio": "9:16"}
-            video_response = requests.post("https://api.runwayml.com/v1/image_to_video", json=video_payload, headers=headers)
-            video_response.raise_for_status()
-            video_task_id = video_response.json().get("id")
+            video_payload = {
+                "image_url": image_url,
+                "prompt": script,
+                "model": "gen3a",
+                "duration": 15,
+                "aspect_ratio": "9:16",
+                "width": 720,
+                "height": 1280
+            }
+            try:
+                video_response = requests.post("https://api.runwayml.com/v1/image_to_video", json=video_payload, headers=headers)
+                video_response.raise_for_status()
+                video_task_id = video_response.json().get("id")
+            except requests.exceptions.HTTPError as e:
+                logging.error(f"Runway video request failed: {e.response.text}")
+                raise
+
             video_url = None
             for _ in range(max_attempts):
                 poll_response = requests.get(f"https://api.runwayml.com/v1/tasks/{video_task_id}", headers=headers)
@@ -180,6 +205,7 @@ def generate_content(num_trends=1):
                     video_url = task_data.get("output", [{}])[0].get("url")
                     break
                 elif task_data.get("status") == "failed":
+                    logging.error(f"Video task failed: {task_data.get('error')}")
                     raise ValueError(f"Video task failed: {task_data.get('error')}")
                 time.sleep(10)
             if not video_url:
