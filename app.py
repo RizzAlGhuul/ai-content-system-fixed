@@ -75,10 +75,25 @@ def generate_content(num_trends=1):
     results = []
     try:
         logging.info("Starting content generation")
-        # Step 1: Fetch and filter Trends
+        # Step 1: Fetch and filter Trends with retries and fallback
         pytrends = TrendReq(hl='en-US', tz=360)
-        trends = pytrends.trending_searches(pn='united_states')[:10]
-        filtered_trends = [t for t in trends.iloc[:, 0].tolist() if NICHE.lower() in t.lower()] or ["Fallback trend in " + NICHE]
+        trends = []
+        retries = 0
+        max_retries = 3
+        while retries < max_retries and not trends:
+            try:
+                trends = pytrends.trending_searches(pn='united_states')[:10]
+                logging.info("Successfully fetched trends from PyTrends")
+            except Exception as e:
+                logging.warning(f"PyTrends failed: {str(e)}")
+                retries += 1
+                time.sleep(5)  # Wait before retrying
+        if not trends or trends.empty:
+            logging.error("No trends from PyTrends; using fallback")
+            trends = ["Investment tips 2025", "How to save money fast", "Passive income ideas"]  # Fallback trends
+        else:
+            trends = trends.iloc[:, 0].tolist()
+        filtered_trends = [t for t in trends if NICHE.lower() in t.lower()] or ["Fallback trend in " + NICHE]
         trends_to_use = filtered_trends[:num_trends]
 
         for trend in trends_to_use:
