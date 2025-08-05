@@ -90,7 +90,7 @@ def generate_content(num_trends=1):
                 time.sleep(5)  # Wait before retrying
         if not trends or trends.empty:
             logging.error("No trends from PyTrends; using fallback")
-            trends = ["Investment tips 2025", "How to save money fast", "Passive income ideas"]
+            trends = ["Investment tips 2025", "How to save money fast", "Passive income ideas"]  # Fallback trends
         else:
             trends = trends.iloc[:, 0].tolist()
         filtered_trends = [t for t in trends if NICHE.lower() in t.lower()] or ["Fallback trend in " + NICHE]
@@ -113,7 +113,7 @@ def generate_content(num_trends=1):
                     response_format={"type": "json_object"}
                 )
                 analysis_json = json.loads(analysis_response.choices[0].message.content)
-                script = analysis_json.get('script', "Default script")[:2048]  # Trim to 2048 chars
+                script = analysis_json.get('script', "Default script")
                 title = analysis_json.get('title', "Trend Video")
                 desc = analysis_json.get('description', "Based on trending topic") + f"\n{AFFILIATE_LINK}"
                 hashtags = analysis_json.get('hashtags', [])
@@ -152,11 +152,11 @@ def generate_content(num_trends=1):
             image_payload = {
                 "promptText": script,
                 "model": "gen4_image",
-                "ratio": "720:1280"  # Portrait ratio per input doc
+                "ratio": "720:1280"
             }
-            logging.info(f"Runway image payload: {json.dumps(image_payload)}")
+            logging.info(f"Runway image payload: {json.dumps(image_payload)}")  # Log payload
             try:
-                image_response = requests.post("https://api.runwayml.com/v1/text_to_image", json=image_payload, headers=headers)
+                image_response = requests.post("https://api.runway.team/v1/text_to_image", json=image_payload, headers=headers)
                 image_response.raise_for_status()
                 image_task_id = image_response.json().get("id")
             except requests.exceptions.HTTPError as e:
@@ -166,10 +166,10 @@ def generate_content(num_trends=1):
             max_attempts = 60
             image_url = None
             for _ in range(max_attempts):
-                poll_response = requests.get(f"https://api.runwayml.com/v1/tasks/{image_task_id}", headers=headers)
+                poll_response = requests.get(f"https://api.runway.team/v1/tasks/{image_task_id}", headers=headers)
                 poll_response.raise_for_status()
                 task_data = poll_response.json()
-                logging.info(f"Runway image task status: {task_data.get('status')}")
+                logging.info(f"Runway image task status: {task_data.get('status')}")  # Log status
                 if task_data.get("status") == "SUCCEEDED":
                     image_url = task_data.get("output", [{}])[0]  # Use 'output' per output doc
                     break
@@ -188,9 +188,9 @@ def generate_content(num_trends=1):
                 "duration": 15,
                 "ratio": "720:1280"
             }
-            logging.info(f"Runway video payload: {json.dumps(video_payload)}")
+            logging.info(f"Runway video payload: {json.dumps(video_payload)}")  # Log payload
             try:
-                video_response = requests.post("https://api.runwayml.com/v1/image_to_video", json=video_payload, headers=headers)
+                video_response = requests.post("https://api.runway.team/v1/image_to_video", json=video_payload, headers=headers)
                 video_response.raise_for_status()
                 video_task_id = video_response.json().get("id")
             except requests.exceptions.HTTPError as e:
@@ -199,10 +199,10 @@ def generate_content(num_trends=1):
 
             video_url = None
             for _ in range(max_attempts):
-                poll_response = requests.get(f"https://api.runwayml.com/v1/tasks/{video_task_id}", headers=headers)
+                poll_response = requests.get(f"https://api.runway.team/v1/tasks/{video_task_id}", headers=headers)
                 poll_response.raise_for_status()
                 task_data = poll_response.json()
-                logging.info(f"Runway video task status: {task_data.get('status')}")
+                logging.info(f"Runway video task status: {task_data.get('status')}")  # Log status
                 if task_data.get("status") == "SUCCEEDED":
                     video_url = task_data.get("output", [{}])[0]  # Use 'output' per output doc
                     break
