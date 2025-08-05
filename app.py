@@ -12,7 +12,6 @@ from dotenv import load_dotenv
 from moviepy.editor import VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip
 from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
-from runwayml import RunwayML
 
 load_dotenv()  # Load .env for local dev
 
@@ -43,13 +42,6 @@ except Exception as e:
 
 logging.info("Initializing ElevenLabs client...")
 elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
-
-logging.info("Initializing Runway client...")
-try:
-    runway_client = RunwayML(api_key=RUNWAY_API_KEY)
-except Exception as e:
-    logging.error(f"Failed to initialize Runway client: {str(e)}")
-    raise
 
 # Temp file prefix for Heroku
 TEMP_DIR = '/tmp/' if 'DYNO' in os.environ else ''
@@ -154,39 +146,72 @@ def generate_content(num_trends=1):
                     if chunk:
                         f.write(chunk)
 
-            # Step 4: Generate Image then Video with Runway using SDK
+            # Step 4: Generate Image then Video with Runway
+            headers = {"Authorization": f"Bearer {RUNWAY_API_KEY}", "Content-Type": "application/json"}
             logging.info("Starting Runway image generation")
+            image_payload = {
+                "promptText": script,
+                "model": "gen4_image",
+                "ratio": "720:1280"
+            }
+            logging.info(f"Runway image payload: {json.dumps(image_payload)}")
+            image_url = None
             try:
-                image_task = runway_client.textToImage.create(
-                    model='gen4_image',
-                    promptText=script,
-                    ratio='720:1280'
-                )
-                image_task_id = image_task.id
-                logging.info(f"Runway image task ID: {image_task_id}")
-                image_task_output = image_task.waitForTaskOutput(timeout=5*60*1000)
-                image_url = image_task_output.output[0]
-            except Exception as e:
-                logging.error(f"Runway image generation failed: {str(e)}")
+                image_response = requests.post("https://api.runwayml.com/v1/text_to_image", json=image_payload, headers=headers)
+                image_response.raise_for_status()
+                image_task_id = image_response.json().get("id")
+                max_attempts = 60
+                for _ in range(max_attempts):
+                    poll_response = requests.get(f"https://api.runwayml.com/v1/tasks/{image_task_id}", headers=headers)
+                    poll_response.raise_for_status()
+                    task_data = poll_response.json()
+                    logging.info(f"Runway image task status: {task_data.get('status')}")
+                    if task_data.get("status") == "SUCCEEDED":
+                        image_url = task_data.get("output", [{}])[0]
+                        break
+                    elif task_data.get("status") == "FAILED":
+                        logging.error(f"Image task failed: {task_data.get('error')}")
+                        raise ValueError(f"Image task failed: {task_data.get('error')}")
+                    time.sleep(10)
+                if not image_url:
+                    raise TimeoutError("Image generation timed out")
+            except requests.exceptions.HTTPError as e:
+                logging.error(f"Runway image request failed: {e.response.text}")
                 logging.warning("Using fallback image due to Runway failure")
                 image_url = "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?ixlib=rb-4.0.3&auto=format&fit=crop&w=720&h=1280&q=80"
 
             logging.info("Starting Runway video generation")
+            video_payload = {
+                "image": image_url,
+                "text": script,
+                "model": "gen4_image",
+                "duration": 15,
+                "ratio": "720:1280"
+            }
+            logging.info(f"Runway video payload: {json.dumps(video_payload)}")
+            video_url = None
             try:
-                video_task = runway_client.imageToVideo.create(
-                    image=image_url,
-                    text=script,
-                    model='gen4_image',
-                    duration=15,
-                    ratio='720:1280'
-                )
-                video_task_id = video_task.id
-                logging.info(f"Runway video task ID: {video_task_id}")
-                video_task_output = video_task.waitForTaskOutput(timeout=5*60*1000)
-                video_url = video_task_output.output[0]
-            except Exception as e:
-                logging.error(f"Runway video generation failed: {str(e)}")
-                raise
+                video_response = requests.post("https://api.runwayml.com/v1/image_to_video", json=video_payload, headers=headers)
+                video_response.raise_for_status()
+                video_task_id = video_response.json().get("id")
+                for _ in range(max_attempts):
+                    poll_response = requests.get(f"https://api.runwayml.com/v1/tasks/{video_task_id}", headers=headers)
+                    poll_response.raise_for_status()
+                    task_data = poll_response.json()
+                    logging.info(f"Runway video task status: {task_data.get('status')}")
+                    if task_data.get("status") == "SUCCEEDED":
+                        video_url = task_data.get("output", [{}])[0]
+                        break
+                    elif task_data.get("status") == "FAILED":
+                        logging.error(f"Video task failed: {task_data.get('error')}")
+                        raise ValueError(f"Video task failed: {task_data.get('error')}")
+                    time.sleep(10)
+                if not video_url:
+                    raise TimeoutError("Video generation timed out")
+            except requests.exceptions.HTTPError as e:
+                logging.error(f"Runway video request failed: {e.response.text}")
+                logging.warning("Using fallback video due to Runway failure")
+                video_url = "https://example.com/fallback-finance-video.mp4"  # Replace with valid HTTPS video URL
 
             video_path = TEMP_DIR + "video.mp4"
             with open(video_path, "wb") as f:
