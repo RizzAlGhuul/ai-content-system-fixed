@@ -90,7 +90,7 @@ def generate_content(num_trends=1):
                 time.sleep(5)  # Wait before retrying
         if not trends or trends.empty:
             logging.error("No trends from PyTrends; using fallback")
-            trends = ["Investment tips 2025", "How to save money fast", "Passive income ideas"]  # Fallback trends
+            trends = ["Investment tips 2025", "How to save money fast", "Passive income ideas"]
         else:
             trends = trends.iloc[:, 0].tolist()
         filtered_trends = [t for t in trends if NICHE.lower() in t.lower()] or ["Fallback trend in " + NICHE]
@@ -149,7 +149,7 @@ def generate_content(num_trends=1):
             logging.info("Starting Runway image generation")
             image_payload = {
                 "prompt": script,
-                "model": "gen-3-alpha",  # Updated to match Runway's Gen-3 Alpha
+                "model": "gen-3-alpha",
                 "aspect_ratio": "9:16",
                 "width": 720,
                 "height": 1280
@@ -208,7 +208,7 @@ def generate_content(num_trends=1):
                     logging.error(f"Video task failed: {task_data.get('error')}")
                     raise ValueError(f"Video task failed: {task_data.get('error')}")
                 time.sleep(10)
-            if not image_url:
+            if not video_url:
                 raise TimeoutError("Video generation timed out")
 
             video_path = TEMP_DIR + "video.mp4"
@@ -282,4 +282,9 @@ def get_analytics():
         insights = insights_response.choices[0].message.content
         return jsonify({"analytics": response, "insights": insights})
     except Exception as e:
-        logging.error(f"Error
+        logging.error(f"Error in analytics: {str(e)}")
+        return jsonify({"error": str(e)})
+
+if __name__ == '__main__':
+    logging.info("Starting Flask app")
+    app.run(debug=True)
