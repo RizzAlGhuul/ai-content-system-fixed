@@ -1,5 +1,8 @@
 flask==3.0.3
 openai==1.40.0
+httpx==0.27.0  # Pin to avoid proxies issue
+httpcore==1.0.5  # Pin for httpx compatibility
+anyio==4.4.0  # Pin for httpx compatibility
 elevenlabs==1.3.1
 requests==2.32.3
 pytrends==4.9.2
@@ -7,4 +10,4 @@ gunicorn==22.0.0
 python-dotenv==1.0.1
 moviepy==1.0.3
 apscheduler==3.10.4
-runwayml==3.9.0  # Updated to latest available version
+runwayml==3.9.0
