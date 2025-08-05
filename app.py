@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from moviepy.editor import VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip
 from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
-from runwayml import RunwayML  # Import Runway SDK
+from runwayml import RunwayML
 
 load_dotenv()  # Load .env for local dev
 
@@ -163,12 +163,12 @@ def generate_content(num_trends=1):
                     ratio='720:1280'
                 )
                 image_task_id = image_task.id
-                image_task_output = image_task.waitForTaskOutput()
+                image_task_output = image_task.waitForTaskOutput(timeout=5*60*1000)  # 5-minute timeout
                 image_url = image_task_output.output[0]
             except Exception as e:
                 logging.error(f"Runway image generation failed: {str(e)}")
                 logging.warning("Using fallback image due to Runway failure")
-                image_url = "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?ixlib=rb-4.0.3&auto=format&fit=crop&w=720&h=1280&q=80"  # Valid HTTPS image
+                image_url = "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?ixlib=rb-4.0.3&auto=format&fit=crop&w=720&h=1280&q=80"
 
             logging.info("Starting Runway video generation")
             try:
@@ -180,7 +180,7 @@ def generate_content(num_trends=1):
                     ratio='720:1280'
                 )
                 video_task_id = video_task.id
-                video_task_output = video_task.waitForTaskOutput()
+                video_task_output = video_task.waitForTaskOutput(timeout=5*60*1000)  # 5-minute timeout
                 video_url = video_task_output.output[0]
             except Exception as e:
                 logging.error(f"Runway video generation failed: {str(e)}")
@@ -203,7 +203,7 @@ def generate_content(num_trends=1):
             video_score, video_feedback = verify_quality("video content", video_desc)
             logging.info(f"Video quality score: {video_score}, feedback: {video_feedback}")
             if video_score < 7:
-                logging.warning(f"Low video quality ({video_score}/10), skipping post")
+                logging.warning(f"Low video quality ({score}/10), skipping post")
                 continue
 
             if os.path.getsize(merged_path) > 10 * 1024 * 1024:
