@@ -1,197 +1,68 @@
 import os
 import requests
-import time
-import json
-import logging
-from flask import Flask, jsonify, render_template, request
-from openai import OpenAI
-from elevenlabs.client import ElevenLabs
-from elevenlabs import VoiceSettings
-from pytrends.request import TrendReq
-from dotenv import load_dotenv
-from moviepy.editor import VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip
-from datetime import datetime, timedelta
-from apscheduler.schedulers.background import BackgroundScheduler
+from moviepy.editor import AudioFileClip, VideoFileClip, CompositeVideoClip
 
-load_dotenv()
+RUNWAY_API_KEY = os.getenv("RUNWAY_API_KEY")
+RUNWAY_URL = "https://api.runwayml.com/v1/inference/stable-diffusion"
+FALLBACK_VIDEO_URL = "https://your-fallback-storage.com/default.mp4"  # Replace with a working fallback video URL
 
-app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
-logging.info("Starting app initialization...")
+def generate_video_with_runway(prompt_text, audio_path, output_path):
+    headers = {
+        "Authorization": f"Bearer {RUNWAY_API_KEY}",
+        "Content-Type": "application/json"
+    }
 
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY')
-RUNWAY_API_KEY = os.getenv('RUNWAY_API_KEY')
-AYRSHARE_API_KEY = os.getenv('AYRSHARE_API_KEY')
-NICHE = os.getenv('NICHE', 'personal finance')
-AFFILIATE_LINK = os.getenv('AFFILIATE_LINK', 'https://example.com/aff')
+    payload = {
+        "input": {
+            "prompt": prompt_text
+        }
+    }
 
-missing_keys = []
-if not OPENAI_API_KEY:
-    missing_keys.append("OPENAI_API_KEY")
-if not ELEVENLABS_API_KEY:
-    missing_keys.append("ELEVENLABS_API_KEY")
-if not RUNWAY_API_KEY:
-    missing_keys.append("RUNWAY_API_KEY")
-if not AYRSHARE_API_KEY:
-    missing_keys.append("AYRSHARE_API_KEY")
+    video_path = "/tmp/video.mp4"
 
-if missing_keys:
-    logging.error(f"Missing the following API keys: {', '.join(missing_keys)}")
-    raise ValueError("Missing required API keys")
-
-openai_client = OpenAI(api_key=OPENAI_API_KEY)
-elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
-
-TEMP_DIR = '/tmp/' if 'DYNO' in os.environ else ''
-
-scheduler = BackgroundScheduler()
-scheduler.add_job(lambda: generate_content(num_trends=3), 'cron', hour='8,16')
-
-@app.route('/')
-def home():
-    return render_template('index.html')
-
-@app.route('/generate', methods=['GET', 'POST'])
-def generate_content(num_trends=1):
-    results = []
     try:
-        logging.info("Starting content generation")
-        pytrends = TrendReq(hl='en-US', tz=360)
-        trends = []
+        print("Requesting image from Runway...")
+        response = requests.post(RUNWAY_URL, headers=headers, json=payload)
+        response.raise_for_status()
+
+        # Expecting a JSON response with an image/video URL
+        result = response.json()
+        image_url = result.get("output")  # Update key if needed
+
+        if not image_url:
+            raise ValueError("Runway response did not contain 'output'")
+
+        print("Downloading video from Runway output...")
+        vid_resp = requests.get(image_url)
+        vid_resp.raise_for_status()
+
+        with open(video_path, "wb") as f:
+            f.write(vid_resp.content)
+
+    except Exception as e:
+        print(f"[WARNING] Runway failed: {e}")
+        print("[INFO] Attempting to download fallback video...")
         try:
-            pytrends.build_payload(kw_list=[NICHE], cat=0, timeframe='now 1-d')
-            trends_df = pytrends.related_queries().get(NICHE, {}).get('top', None)
-            if trends_df is not None:
-                trends = trends_df['query'].tolist()
-        except Exception as e:
-            logging.warning(f"Trend fetch failed: {str(e)}")
-            trends = ["Investment tips 2025", "How to save money fast", "Passive income ideas"]
+            fallback_response = requests.get(FALLBACK_VIDEO_URL)
+            fallback_response.raise_for_status()
+            with open(video_path, "wb") as f:
+                f.write(fallback_response.content)
+        except Exception as fallback_error:
+            print(f"[ERROR] Fallback video download failed: {fallback_error}")
+            return
 
-        filtered_trends = [t for t in trends if NICHE.lower() in t.lower()] or ["Fallback trend in " + NICHE]
-        trends_to_use = filtered_trends[:num_trends]
+    # Validate video exists
+    if not os.path.exists(video_path) or os.path.getsize(video_path) < 10000:
+        print("[ERROR] Video file is missing or invalid after all attempts.")
+        return
 
-        for trend in trends_to_use:
-            logging.info(f"Processing trend: {trend}")
-            for _ in range(3):
-                prompt = f"""
-                Analyze '{trend}' in {NICHE} niche for short-form video. 
-                Output JSON: \"script\", \"title\", \"description\", \"hashtags\" (5).
-                Affiliate link: {AFFILIATE_LINK}
-                """
-                try:
-                    response = openai_client.chat.completions.create(
-                        model="gpt-4o",
-                        messages=[{"role": "user", "content": prompt}]
-                    )
-                    raw_content = response.choices[0].message.content or ""
-                    raw_content = raw_content.strip()
-                    if raw_content.startswith("```json") or raw_content.startswith("````"):
-                        raw_content = raw_content.removeprefix("```json").removeprefix("````").removesuffix("```")
-                    data = json.loads(raw_content)
-                except Exception as e:
-                    logging.error(f"OpenAI response parsing failed: {str(e)}")
-                    continue
-
-                script = data.get('script', '')[:1000]
-                title = data.get('title', 'Trend Video')
-                desc = data.get('description', '') + f"\n{AFFILIATE_LINK}"
-                hashtags = data.get('hashtags', [])
-
-                score, feedback = verify_quality("script analysis", script + " " + desc)
-                if score >= 7:
-                    break
-            else:
-                continue
-
-            audio_path = os.path.join(TEMP_DIR, "voiceover.mp3")
-            logging.info("Generating voiceover")
-            audio_stream = elevenlabs_client.text_to_speech.convert(
-                text=script,
-                voice_id="21m00Tcm4TlvDq8ikWAM",
-                model_id="eleven_turbo_v2",
-                voice_settings=VoiceSettings(stability=0.5, similarity_boost=0.75),
-                output_format="mp3_44100_128"
-            )
-            with open(audio_path, "wb") as f:
-                for chunk in audio_stream:
-                    f.write(chunk)
-
-            logging.info("Starting Runway image generation")
-            headers = {
-                "Authorization": f"Bearer {RUNWAY_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            try:
-                image_payload = {
-                    "prompt": script,
-                    "width": 512,
-                    "height": 768,
-                    "model": "stable-diffusion-v1-5"
-                }
-                resp = requests.post("https://api.runwayml.com/gen/image", headers=headers, json=image_payload)
-                resp.raise_for_status()
-                image_url = resp.json().get("image") or "https://images.unsplash.com/photo-1600585154340-be6161a56a0c"
-            except Exception as e:
-                logging.warning(f"Runway fallback: {str(e)}")
-                image_url = "https://images.unsplash.com/photo-1600585154340-be6161a56a0c"
-
-            logging.info("Merging video and audio")
-            try:
-                video_path = os.path.join(TEMP_DIR, "video.mp4")
-                merged_path = os.path.join(TEMP_DIR, "merged.mp4")
-
-                # Here you would implement actual video creation from image_url if needed.
-                # For now, simulate by downloading a known good MP4
-                fallback_video = "https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4"
-                response = requests.get(fallback_video)
-                with open(video_path, "wb") as f:
-                    f.write(response.content)
-
-                video_clip = VideoFileClip(video_path)
-                audio_clip = AudioFileClip(audio_path)
-                if audio_clip.duration < video_clip.duration:
-                    raise ValueError("Audio is shorter than video, cannot merge")
-                audio_clip = audio_clip.subclip(0, video_clip.duration)
-                caption_clip = TextClip("Trend: " + trend, fontsize=24, color='white').set_position('bottom').set_duration(video_clip.duration)
-                merged = CompositeVideoClip([video_clip.set_audio(audio_clip), caption_clip])
-                merged.write_videofile(merged_path, codec="libx264", audio_codec="aac")
-                os.remove(audio_path)
-                os.remove(video_path)
-                os.remove(merged_path)
-            except Exception as e:
-                logging.error(f"MoviePy merge failed: {str(e)}")
-                continue
-
-            results.append({"trend": trend, "status": "success"})
-
-        return jsonify({"status": "success", "results": results})
-
-    except Exception as e:
-        logging.error(f"Error in generate_content: {str(e)}")
-        return jsonify({"status": "error", "message": str(e)})
-
-def verify_quality(output_type, content):
-    logging.info(f"Verifying quality for {output_type}")
-    prompt = f"Review this {output_type} for quality in {NICHE} niche: {content}. Score 1-10 for relevance, engagement, monetization potential. Output JSON: 'score' (int), 'feedback' (string)."
+    # Merge audio and video
     try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        raw_content = response.choices[0].message.content.strip()
-        if raw_content.startswith("```json") or raw_content.startswith("````"):
-            raw_content = raw_content.removeprefix("```json").removeprefix("````").removesuffix("```")
-        result = json.loads(raw_content)
-        return result.get('score', 5), result.get('feedback', '')
-    except Exception as e:
-        logging.warning(f"Quality check parse failed: {str(e)}")
-        return 5, "Failed to parse response"
+        video_clip = VideoFileClip(video_path)
+        audio_clip = AudioFileClip(audio_path)
+        final_clip = video_clip.set_audio(audio_clip)
+        final_clip.write_videofile(output_path, codec="libx264", audio_codec="aac")
+        print("[SUCCESS] Video generated and saved to:", output_path)
 
-if __name__ == '__main__':
-    try:
-        scheduler.start()
-        logging.info("Scheduler started successfully.")
-        app.run(debug=False)
-    except Exception as e:
-        logging.critical(f"App failed to start: {str(e)}")
+    except Exception as merge_error:
+        print(f"[ERROR] MoviePy merge failed: {merge_error}")
