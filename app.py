@@ -128,11 +128,15 @@ def generate_content(num_trends=1):
                 resp = requests.post("https://api.runwayml.com/v1/text_to_image", headers=headers, json=image_payload)
                 if resp.status_code == 200:
                     task_id = resp.json().get("id")
-                    for _ in range(60):
+                    if not task_id:
+                        raise ValueError("Runway image task ID not returned")
+                    for _ in range(90):
                         poll = requests.get(f"https://api.runwayml.com/v1/tasks/{task_id}", headers=headers)
-                        status = poll.json().get("status")
+                        poll_json = poll.json()
+                        logging.info(f"Runway image task poll: {json.dumps(poll_json, indent=2)}")
+                        status = poll_json.get("status")
                         if status == "SUCCEEDED":
-                            image_url = poll.json().get("output", [{}])[0]
+                            image_url = poll_json.get("output", [{}])[0]
                             break
                         elif status == "FAILED":
                             break
@@ -154,11 +158,15 @@ def generate_content(num_trends=1):
                 resp = requests.post("https://api.runwayml.com/v1/image_to_video", headers=headers, json=video_payload)
                 if resp.status_code == 200:
                     task_id = resp.json().get("id")
-                    for _ in range(60):
+                    if not task_id:
+                        raise ValueError("Runway video task ID not returned")
+                    for _ in range(90):
                         poll = requests.get(f"https://api.runwayml.com/v1/tasks/{task_id}", headers=headers)
-                        status = poll.json().get("status")
+                        poll_json = poll.json()
+                        logging.info(f"Runway video task poll: {json.dumps(poll_json, indent=2)}")
+                        status = poll_json.get("status")
                         if status == "SUCCEEDED":
-                            output = poll.json().get("output")
+                            output = poll_json.get("output")
                             video_url = None
                             if isinstance(output, list) and output:
                                 video_url = output[0].get("uri") or output[0].get("video")
