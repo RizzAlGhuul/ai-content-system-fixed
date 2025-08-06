@@ -174,7 +174,12 @@ def generate_content(num_trends=1):
                         if status == "SUCCEEDED":
                             data = poll.json()
                             logging.info(f"Runway SUCCEEDED full response: {json.dumps(data)}")
-                            video_url = data.get("output", [{}])[0] if isinstance(data.get("output"), list) else data.get("output", {}).get("uri")
+                            output = data.get("output")
+                            video_url = None
+                            if isinstance(output, list) and len(output) > 0 and isinstance(output[0], str):
+                                video_url = output[0]
+                            elif isinstance(output, dict) and "uri" in output:
+                                video_url = output["uri"]
                             if not video_url:
                                 raise ValueError("Runway returned empty video URL")
                             break
