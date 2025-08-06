@@ -38,27 +38,6 @@ TEMP_DIR = '/tmp/' if 'DYNO' in os.environ else ''
 scheduler = BackgroundScheduler()
 scheduler.add_job(lambda: generate_content(num_trends=3), 'cron', hour='8,16')
 
-if __name__ == '__main__':
-    scheduler.start()
-    app.run(debug=True)
-
-def verify_quality(output_type, content):
-    logging.info(f"Verifying quality for {output_type}")
-    prompt = f"Review this {output_type} for quality in {NICHE} niche: {content}. Score 1-10 for relevance, engagement, monetization potential. Output JSON: 'score' (int), 'feedback' (string)."
-    try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        raw_content = response.choices[0].message.content.strip()
-        if raw_content.startswith("```json") or raw_content.startswith("```"):
-            raw_content = raw_content.removeprefix("```json").removeprefix("```").removesuffix("```")
-        result = json.loads(raw_content)
-        return result.get('score', 5), result.get('feedback', '')
-    except Exception as e:
-        logging.warning(f"Quality check parse failed: {str(e)}")
-        return 5, "Failed to parse response"
-
 @app.route('/')
 def home():
     return render_template('index.html')
@@ -95,19 +74,14 @@ def generate_content(num_trends=1):
                         model="gpt-4o",
                         messages=[{"role": "user", "content": prompt}]
                     )
-                    raw_content = response.choices[0].message.content
-                    if not raw_content:
-                        raise ValueError("OpenAI returned empty content.")
+                    raw_content = response.choices[0].message.content or ""
                     raw_content = raw_content.strip()
                     if raw_content.startswith("```json") or raw_content.startswith("```"):
                         raw_content = raw_content.removeprefix("```json").removeprefix("```").removesuffix("```")
                     data = json.loads(raw_content)
-                except json.JSONDecodeError as e:
-                    logging.error(f"OpenAI response not valid JSON: {raw_content}")
-                    raise
                 except Exception as e:
                     logging.error(f"OpenAI response parsing failed: {str(e)}")
-                    raise
+                    continue
 
                 script = data.get('script', '')[:1000]
                 title = data.get('title', 'Trend Video')
@@ -118,9 +92,9 @@ def generate_content(num_trends=1):
                 if score >= 7:
                     break
             else:
-                continue  # skip this trend
+                continue
 
-            audio_path = TEMP_DIR + "voiceover.mp3"
+            audio_path = os.path.join(TEMP_DIR, "voiceover.mp3")
             logging.info("Generating voiceover")
             audio_stream = elevenlabs_client.text_to_speech.convert(
                 text=script,
@@ -156,7 +130,8 @@ def generate_content(num_trends=1):
             except Exception as e:
                 logging.warning(f"Runway image fallback: {str(e)}")
 
-            video_path = TEMP_DIR + "video.mp4"
+            video_path = os.path.join(TEMP_DIR, "video.mp4")
+            merged_path = os.path.join(TEMP_DIR, "merged.mp4")
             try:
                 video_payload = {
                     "promptImage": image_url,
@@ -172,39 +147,31 @@ def generate_content(num_trends=1):
                         poll = requests.get(f"https://api.runwayml.com/v1/tasks/{task_id}", headers=headers)
                         status = poll.json().get("status")
                         if status == "SUCCEEDED":
-                            data = poll.json()
-                            logging.info(f"Runway SUCCEEDED full response: {json.dumps(data)}")
-                            output = data.get("output")
-                            video_url = None
-                            if isinstance(output, list) and output and isinstance(output[0], str):
-                                video_url = output[0]
-                            elif isinstance(output, dict):
-                                video_url = output.get("uri") or output.get("video")
+                            output = poll.json().get("output")
+                            video_url = output[0] if isinstance(output, list) else output.get("uri") or output.get("video")
                             if not video_url:
-                                logging.error(f"Invalid or empty output field: {json.dumps(output)}")
                                 raise ValueError("Runway returned empty video URL")
+                            response = requests.get(video_url, timeout=30)
+                            with open(video_path, "wb") as f:
+                                f.write(response.content)
                             break
                         elif status == "FAILED":
-                            break
+                            raise ValueError("Runway video generation failed")
                         time.sleep(5)
-                response = requests.get(video_url, timeout=30)
-                with open(video_path, "wb") as f:
-                    f.write(response.content)
             except Exception as e:
                 logging.warning(f"Runway video fallback: {str(e)}")
                 video_path = None
 
             logging.info("Merging video and audio")
-            if not os.path.exists(audio_path):
-                raise FileNotFoundError("Missing audio file")
             try:
+                if not os.path.exists(audio_path):
+                    raise FileNotFoundError("Missing audio file")
                 if not video_path or not os.path.exists(video_path):
                     raise FileNotFoundError("Missing or invalid video file")
                 video_clip = VideoFileClip(video_path)
                 audio_clip = AudioFileClip(audio_path).subclip(0, video_clip.duration)
                 caption_clip = TextClip("Trend: " + trend, fontsize=24, color='white').set_position('bottom').set_duration(video_clip.duration)
                 merged = CompositeVideoClip([video_clip.set_audio(audio_clip), caption_clip])
-                merged_path = TEMP_DIR + "merged.mp4"
                 merged.write_videofile(merged_path, codec="libx264", audio_codec="aac")
             except Exception as e:
                 logging.error(f"MoviePy merge failed: {str(e)}")
@@ -217,3 +184,24 @@ def generate_content(num_trends=1):
     except Exception as e:
         logging.error(f"Error in generate_content: {str(e)}")
         return jsonify({"status": "error", "message": str(e)})
+
+def verify_quality(output_type, content):
+    logging.info(f"Verifying quality for {output_type}")
+    prompt = f"Review this {output_type} for quality in {NICHE} niche: {content}. Score 1-10 for relevance, engagement, monetization potential. Output JSON: 'score' (int), 'feedback' (string)."
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw_content = response.choices[0].message.content.strip()
+        if raw_content.startswith("```json") or raw_content.startswith("```"):
+            raw_content = raw_content.removeprefix("```json").removeprefix("```").removesuffix("```")
+        result = json.loads(raw_content)
+        return result.get('score', 5), result.get('feedback', '')
+    except Exception as e:
+        logging.warning(f"Quality check parse failed: {str(e)}")
+        return 5, "Failed to parse response"
+
+if __name__ == '__main__':
+    scheduler.start()
+    app.run(debug=True)
