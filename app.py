@@ -170,4 +170,68 @@ def generate_content(num_trends=1):
                             response = requests.get(video_url, timeout=30)
                             if response.status_code != 200 or not response.content:
                                 raise ValueError(f"Video download failed from Runway: {video_url}")
-                            wit
+                            with open(video_path, "wb") as f:
+                                f.write(response.content)
+                            video_downloaded = True
+                            break
+                        elif status == "FAILED":
+                            raise ValueError("Runway video generation failed")
+                        time.sleep(5)
+            except Exception as e:
+                logging.warning(f"Runway video fallback: {str(e)}")
+
+            logging.info("Merging video and audio")
+            try:
+                if not os.path.exists(audio_path):
+                    raise FileNotFoundError("Missing audio file")
+                if not video_downloaded or not os.path.exists(video_path):
+                    raise FileNotFoundError("Missing or invalid video file")
+                video_clip = VideoFileClip(video_path)
+                audio_clip = AudioFileClip(audio_path)
+                if audio_clip.duration < video_clip.duration:
+                    raise ValueError("Audio is shorter than video, cannot merge")
+                audio_clip = audio_clip.subclip(0, video_clip.duration)
+                caption_clip = TextClip("Trend: " + trend, fontsize=24, color='white').set_position('bottom').set_duration(video_clip.duration)
+                merged = CompositeVideoClip([video_clip.set_audio(audio_clip), caption_clip])
+                try:
+                    merged.write_videofile(merged_path, codec="libx264", audio_codec="aac")
+                except Exception as e:
+                    logging.error(f"Error writing merged video file: {str(e)}")
+                try:
+                    os.remove(audio_path)
+                    os.remove(video_path)
+                    os.remove(merged_path)
+                except Exception as cleanup_error:
+                    logging.warning(f"Cleanup failed: {str(cleanup_error)}")
+            except Exception as e:
+                logging.error(f"MoviePy merge failed: {str(e)}")
+                continue
+
+            results.append({"trend": trend, "status": "success"})
+
+        return jsonify({"status": "success", "results": results})
+
+    except Exception as e:
+        logging.error(f"Error in generate_content: {str(e)}")
+        return jsonify({"status": "error", "message": str(e)})
+
+def verify_quality(output_type, content):
+    logging.info(f"Verifying quality for {output_type}")
+    prompt = f"Review this {output_type} for quality in {NICHE} niche: {content}. Score 1-10 for relevance, engagement, monetization potential. Output JSON: 'score' (int), 'feedback' (string)."
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw_content = response.choices[0].message.content.strip()
+        if raw_content.startswith("```json") or raw_content.startswith("````"):
+            raw_content = raw_content.removeprefix("```json").removeprefix("````").removesuffix("```")
+        result = json.loads(raw_content)
+        return result.get('score', 5), result.get('feedback', '')
+    except Exception as e:
+        logging.warning(f"Quality check parse failed: {str(e)}")
+        return 5, "Failed to parse response"
+
+if __name__ == '__main__':
+    scheduler.start()
+    app.run(debug=False)
