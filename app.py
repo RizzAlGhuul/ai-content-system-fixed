@@ -200,6 +200,20 @@ def generate_content(num_trends=1):
             logging.info("Merging video and audio")
             try:
                 logging.info(f"Checking if video exists at {video_path}: {os.path.exists(video_path)}")
+
+                # FFmpeg fix for moov atom
+                try:
+                    fixed_path = os.path.join(TEMP_DIR, "fixed_video.mp4")
+                    cmd = f"ffmpeg -y -i {video_path} -c copy -movflags +faststart {fixed_path}"
+                    os.system(cmd)
+                    if os.path.exists(fixed_path):
+                        video_path = fixed_path
+                        logging.info("FFmpeg reprocessed video to fix moov atom issue.")
+                    else:
+                        logging.warning("FFmpeg reprocessing failed or output not created.")
+                except Exception as ffmpeg_fix_error:
+                    logging.warning(f"FFmpeg fix error: {str(ffmpeg_fix_error)}")
+
                 if not os.path.exists(audio_path):
                     raise FileNotFoundError("Missing audio file")
                 if not video_downloaded or not os.path.exists(video_path):
