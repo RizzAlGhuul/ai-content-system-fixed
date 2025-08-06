@@ -50,7 +50,10 @@ def verify_quality(output_type, content):
             model="gpt-4o",
             messages=[{"role": "user", "content": prompt}]
         )
-        result = json.loads(response.choices[0].message.content)
+        raw_content = response.choices[0].message.content.strip()
+        if raw_content.startswith("```json") or raw_content.startswith("```"):
+            raw_content = raw_content.removeprefix("```json").removeprefix("```").removesuffix("```")
+        result = json.loads(raw_content)
         return result.get('score', 5), result.get('feedback', '')
     except Exception as e:
         logging.warning(f"Quality check parse failed: {str(e)}")
