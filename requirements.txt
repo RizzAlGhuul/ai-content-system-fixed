@@ -4,3 +4,4 @@ uuid
 runwayml==3.10.0
 elevenlabs==1.0.0
 httpx
+gunicorn
