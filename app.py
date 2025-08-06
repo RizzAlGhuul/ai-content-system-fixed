@@ -113,7 +113,7 @@ def generate_content(num_trends=1):
                     response_format={"type": "json_object"}
                 )
                 analysis_json = json.loads(analysis_response.choices[0].message.content)
-                script = analysis_json.get('script', "Default script")[:2048]
+                script = analysis_json.get('script', "Default script")[:1000]  # Trim to 1000 chars per doc
                 title = analysis_json.get('title', "Trend Video")
                 desc = analysis_json.get('description', "Based on trending topic") + f"\n{AFFILIATE_LINK}"
                 hashtags = analysis_json.get('hashtags', [])
@@ -147,12 +147,17 @@ def generate_content(num_trends=1):
                         f.write(chunk)
 
             # Step 4: Generate Image then Video with Runway
-            headers = {"Authorization": f"Bearer {RUNWAY_API_KEY}", "Content-Type": "application/json"}
+            headers = {
+                "Authorization": f"Bearer {RUNWAY_API_KEY}",
+                "Content-Type": "application/json",
+                "X-Runway-Version": "2024-11-06"  # Required per doc
+            }
             logging.info("Starting Runway image generation")
             image_payload = {
                 "promptText": script,
                 "model": "gen4_image",
-                "ratio": "720:1280"
+                "ratio": "720:1280",
+                "seed": 12345  # Fixed seed for consistency
             }
             logging.info(f"Runway image payload: {json.dumps(image_payload)}")
             image_url = None
@@ -182,11 +187,11 @@ def generate_content(num_trends=1):
 
             logging.info("Starting Runway video generation")
             video_payload = {
-                "image": image_url,
-                "text": script,
-                "model": "gen4_image",
-                "duration": 15,
-                "ratio": "720:1280"
+                "promptImage": image_url,
+                "promptText": script,
+                "model": "gen4_turbo",
+                "ratio": "720:1280",
+                "seed": 12345
             }
             logging.info(f"Runway video payload: {json.dumps(video_payload)}")
             video_url = None
@@ -211,7 +216,7 @@ def generate_content(num_trends=1):
             except requests.exceptions.HTTPError as e:
                 logging.error(f"Runway video request failed: {e.response.text}")
                 logging.warning("Using fallback video due to Runway failure")
-                video_url = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"  # Valid HTTPS MP4 with duration
+                video_url = "https://sample-videos.com/video321/mp4/720/big_buck_bunny_720p_1mb.mp4"
 
             video_path = TEMP_DIR + "video.mp4"
             try:
