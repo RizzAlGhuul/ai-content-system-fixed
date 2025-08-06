@@ -49,7 +49,7 @@ TEMP_DIR = '/tmp/' if 'DYNO' in os.environ else ''
 # Scheduler for automated runs
 logging.info("Setting up scheduler...")
 scheduler = BackgroundScheduler()
-scheduler.add_job(lambda: generate_content(num_trends=3), 'cron', hour='8')  # 3 videos/day at 8 AM UTC
+scheduler.add_job(lambda: generate_content(num_trends=3), 'cron', hour='8,16')
 scheduler.start()
 logging.info("Scheduler initialized")
 
@@ -147,11 +147,7 @@ def generate_content(num_trends=1):
                         f.write(chunk)
 
             # Step 4: Generate Image then Video with Runway
-            headers = {
-                "Authorization": f"Bearer {RUNWAY_API_KEY}",
-                "Content-Type": "application/json",
-                "X-API-Version": "v1"  # Explicit API version header
-            }
+            headers = {"Authorization": f"Bearer {RUNWAY_API_KEY}", "Content-Type": "application/json"}
             logging.info("Starting Runway image generation")
             image_payload = {
                 "promptText": script,
@@ -161,12 +157,12 @@ def generate_content(num_trends=1):
             logging.info(f"Runway image payload: {json.dumps(image_payload)}")
             image_url = None
             try:
-                image_response = requests.post("https://api.runwayml.com/v2/text_to_image", json=image_payload, headers=headers)
+                image_response = requests.post("https://api.runwayml.com/v1/text_to_image", json=image_payload, headers=headers)
                 image_response.raise_for_status()
                 image_task_id = image_response.json().get("id")
                 max_attempts = 60
                 for _ in range(max_attempts):
-                    poll_response = requests.get(f"https://api.runwayml.com/v2/tasks/{image_task_id}", headers=headers)
+                    poll_response = requests.get(f"https://api.runwayml.com/v1/tasks/{image_task_id}", headers=headers)
                     poll_response.raise_for_status()
                     task_data = poll_response.json()
                     logging.info(f"Runway image task status: {task_data.get('status')}")
@@ -195,11 +191,11 @@ def generate_content(num_trends=1):
             logging.info(f"Runway video payload: {json.dumps(video_payload)}")
             video_url = None
             try:
-                video_response = requests.post("https://api.runwayml.com/v2/image_to_video", json=video_payload, headers=headers)
+                video_response = requests.post("https://api.runwayml.com/v1/image_to_video", json=video_payload, headers=headers)
                 video_response.raise_for_status()
                 video_task_id = video_response.json().get("id")
                 for _ in range(max_attempts):
-                    poll_response = requests.get(f"https://api.runwayml.com/v2/tasks/{video_task_id}", headers=headers)
+                    poll_response = requests.get(f"https://api.runwayml.com/v1/tasks/{video_task_id}", headers=headers)
                     poll_response.raise_for_status()
                     task_data = poll_response.json()
                     logging.info(f"Runway video task status: {task_data.get('status')}")
@@ -215,7 +211,7 @@ def generate_content(num_trends=1):
             except requests.exceptions.HTTPError as e:
                 logging.error(f"Runway video request failed: {e.response.text}")
                 logging.warning("Using fallback video due to Runway failure")
-                video_url = "https://sample-videos.com/video321/mp4/720/big_buck_bunny_720p_1mb.mp4"
+                video_url = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"  # Valid HTTPS MP4 with duration
 
             video_path = TEMP_DIR + "video.mp4"
             try:
@@ -242,7 +238,7 @@ def generate_content(num_trends=1):
 
             video_desc = f"Video based on script: {script}"
             video_score, video_feedback = verify_quality("video content", video_desc)
-            logging.info(f"Video quality score: {video_score}, feedback: {video_feedback}")
+            logging.info(f"Video quality score: {video_score}, feedback: {feedback}")
             if video_score < 7:
                 logging.warning(f"Low video quality ({score}/10), skipping post")
                 continue
