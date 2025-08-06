@@ -30,7 +30,8 @@ if not all([OPENAI_API_KEY, ELEVENLABS_API_KEY, RUNWAY_API_KEY, AYRSHARE_API_KEY
     logging.error("Missing one or more API keys in environment variables")
     raise ValueError("Missing API keys")
 
-openai_client = OpenAI(api_key=OPENAI_API_KEY)\nelevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
+elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
 
 TEMP_DIR = '/tmp/' if 'DYNO' in os.environ else ''
 
