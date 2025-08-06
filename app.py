@@ -48,6 +48,37 @@ TEMP_DIR = '/tmp/' if 'DYNO' in os.environ else ''
 scheduler = BackgroundScheduler()
 scheduler.add_job(lambda: generate_content(num_trends=3), 'cron', hour='8,16')
 
+def runway_headers():
+    return {
+        "Authorization": f"Bearer {RUNWAY_API_KEY}",
+        "Content-Type": "application/json",
+        "X-Runway-Version": "2024-11-06"
+    }
+
+def generate_image(prompt):
+    payload = {
+        "prompt": prompt,
+        "model": "stable-diffusion-v1-5",
+        "ratio": "768:1280",
+        "seed": 42
+    }
+    resp = requests.post("https://api.runwayml.com/v1/text_to_image", headers=runway_headers(), json=payload)
+    resp.raise_for_status()
+    return resp.json().get("image")
+
+def generate_video_from_image(image_url, prompt):
+    payload = {
+        "promptImage": image_url,
+        "promptText": prompt,
+        "model": "gen4_turbo",
+        "ratio": "1280:768",
+        "duration": 5,
+        "seed": 12345
+    }
+    resp = requests.post("https://api.runwayml.com/v1/image_to_video", headers=runway_headers(), json=payload)
+    resp.raise_for_status()
+    return resp.json().get("video")
+
 @app.route('/')
 def home():
     return render_template('index.html')
@@ -117,117 +148,36 @@ def generate_content(num_trends=1):
                 for chunk in audio_stream:
                     f.write(chunk)
 
-            logging.info("Starting Runway image generation")
-            headers = {
-                "Authorization": f"Bearer {RUNWAY_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            image_url = "https://images.unsplash.com/photo-1600585154340-be6161a56a0c"
             try:
-                image_payload = {"promptText": script, "model": "gen4_image", "ratio": "720:1280"}
-                resp = requests.post("https://api.runwayml.com/v1/text_to_image", headers=headers, json=image_payload)
-                if resp.status_code != 200:
-                    raise Exception(f"Image gen request failed: {resp.text}")
-                task_id = resp.json().get("id")
-                if not task_id:
-                    raise ValueError("Runway image task ID not returned")
-                for _ in range(90):
-                    poll = requests.get(f"https://api.runwayml.com/v1/tasks/{task_id}", headers=headers)
-                    poll_json = poll.json()
-                    logging.info(f"Runway image task poll: {json.dumps(poll_json, indent=2)}")
-                    status = poll_json.get("status")
-                    if status == "SUCCEEDED":
-                        image_url = poll_json.get("output", [{}])[0]
-                        break
-                    elif status == "FAILED":
-                        raise ValueError("Runway image task failed")
-                    time.sleep(5)
+                image_url = generate_image(script)
+                video_url = generate_video_from_image(image_url, script)
+                response = requests.get(video_url, timeout=30)
+                video_path = os.path.join(TEMP_DIR, "video.mp4")
+                with open(video_path, "wb") as f:
+                    f.write(response.content)
             except Exception as e:
-                logging.warning(f"Runway image fallback: {str(e)}")
-
-            video_path = os.path.join(TEMP_DIR, "video.mp4")
-            merged_path = os.path.join(TEMP_DIR, "merged.mp4")
-            video_downloaded = False
-            try:
-                video_payload = {
-                    "promptImage": image_url,
-                    "promptText": script,
-                    "model": "gen3a_turbo",
-                    "ratio": "720:1280",
-                    "seed": 12345
-                }
-                resp = requests.post("https://api.runwayml.com/v1/image_to_video", headers=headers, json=video_payload)
-                if resp.status_code != 200:
-                    raise Exception(f"Video gen request failed: {resp.text}")
-                task_id = resp.json().get("id")
-                if not task_id:
-                    raise ValueError("Runway video task ID not returned")
-                for _ in range(90):
-                    poll = requests.get(f"https://api.runwayml.com/v1/tasks/{task_id}", headers=headers)
-                    poll_json = poll.json()
-                    logging.info(f"Runway video task poll: {json.dumps(poll_json, indent=2)}")
-                    status = poll_json.get("status")
-                    if status == "SUCCEEDED":
-                        output = poll_json.get("output")
-                        video_url = None
-                        if isinstance(output, list) and output:
-                            video_url = output[0].get("uri") or output[0].get("video")
-                        elif isinstance(output, dict):
-                            video_url = output.get("uri") or output.get("video")
-                        logging.info(f"Runway returned video URL: {video_url}")
-                        if not video_url or not video_url.startswith("http"):
-                            raise ValueError("Runway returned invalid video URL")
-                        response = requests.get(video_url, timeout=30)
-                        if response.status_code != 200 or not response.content:
-                            raise ValueError(f"Video download failed from Runway: {video_url}")
-                        logging.info(f"Downloaded video file size: {len(response.content)} bytes")
-                        with open(video_path, "wb") as f:
-                            f.write(response.content)
-                        video_downloaded = True
-                        break
-                    elif status == "FAILED":
-                        raise ValueError("Runway video generation failed")
-                    time.sleep(5)
-            except Exception as e:
-                logging.warning(f"Runway video fallback: {str(e)}")
-
-            if not video_downloaded:
-                logging.warning("Using fallback video due to Runway failure")
+                logging.warning(f"Runway fallback: {str(e)}")
                 fallback_url = "https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4"
-                try:
-                    response = requests.get(fallback_url)
-                    if response.status_code != 200:
-                        raise Exception("Fallback video could not be downloaded")
-                    with open(video_path, "wb") as f:
-                        f.write(response.content)
-                except Exception as e:
-                    logging.error(f"Failed to use fallback video: {str(e)}")
-                video_downloaded = True
+                response = requests.get(fallback_url)
+                video_path = os.path.join(TEMP_DIR, "video.mp4")
+                with open(video_path, "wb") as f:
+                    f.write(response.content)
 
             logging.info("Merging video and audio")
             try:
-                logging.info(f"Checking if video exists at {video_path}: {os.path.exists(video_path)}")
-                if not os.path.exists(audio_path):
-                    raise FileNotFoundError("Missing audio file")
-                if not video_downloaded or not os.path.exists(video_path):
-                    raise FileNotFoundError("Missing or invalid video file before merging")
+                if not os.path.exists(audio_path) or not os.path.exists(video_path):
+                    raise FileNotFoundError("Missing required media files")
                 video_clip = VideoFileClip(video_path)
-                audio_clip = AudioFileClip(audio_path)
-                if audio_clip.duration < video_clip.duration:
-                    raise ValueError("Audio is shorter than video, cannot merge")
-                audio_clip = audio_clip.subclip(0, video_clip.duration)
+                audio_clip = AudioFileClip(audio_path).subclip(0, video_clip.duration)
                 caption_clip = TextClip("Trend: " + trend, fontsize=24, color='white').set_position('bottom').set_duration(video_clip.duration)
                 merged = CompositeVideoClip([video_clip.set_audio(audio_clip), caption_clip])
+                merged_path = os.path.join(TEMP_DIR, "merged.mp4")
                 merged.write_videofile(merged_path, codec="libx264", audio_codec="aac")
-                try:
-                    os.remove(audio_path)
-                    os.remove(video_path)
-                    os.remove(merged_path)
-                except Exception as cleanup_error:
-                    logging.warning(f"Cleanup failed: {str(cleanup_error)}")
+                os.remove(audio_path)
+                os.remove(video_path)
+                os.remove(merged_path)
             except Exception as e:
                 logging.error(f"MoviePy merge failed: {str(e)}")
-                continue
 
             results.append({"trend": trend, "status": "success"})
 
