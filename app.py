@@ -124,14 +124,16 @@ def generate_content(num_trends=1):
             }
             try:
                 image_payload = {
-                    "prompt": script,
-                    "width": 512,
-                    "height": 768,
-                    "model": "stable-diffusion-v1-5"
+                    "modelVersionId": "stable-diffusion-v1-5",  # example model version
+                    "input": {
+                        "prompt": script,
+                        "width": 512,
+                        "height": 768
+                    }
                 }
-                resp = requests.post("https://api.runwayml.com/gen/image", headers=headers, json=image_payload)
+                resp = requests.post("https://api.runwayml.com/v1/inference", headers=headers, json=image_payload)
                 resp.raise_for_status()
-                image_url = resp.json().get("image") or "https://images.unsplash.com/photo-1600585154340-be6161a56a0c"
+                image_url = resp.json().get("output", {}).get("image") or "https://images.unsplash.com/photo-1600585154340-be6161a56a0c"
             except Exception as e:
                 logging.warning(f"Runway fallback: {str(e)}")
                 image_url = "https://images.unsplash.com/photo-1600585154340-be6161a56a0c"
@@ -141,10 +143,13 @@ def generate_content(num_trends=1):
                 video_path = os.path.join(TEMP_DIR, "video.mp4")
                 merged_path = os.path.join(TEMP_DIR, "merged.mp4")
 
-                fallback_video = "https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4"
+                fallback_video = "https://filesamples.com/samples/video/mp4/sample_640x360.mp4"
                 response = requests.get(fallback_video)
                 with open(video_path, "wb") as f:
                     f.write(response.content)
+
+                if os.path.getsize(video_path) < 1024:
+                    raise ValueError("Downloaded fallback video is too small or invalid.")
 
                 video_clip = VideoFileClip(video_path)
                 audio_clip = AudioFileClip(audio_path)
