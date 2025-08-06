@@ -181,6 +181,7 @@ def generate_content(num_trends=1):
                             elif isinstance(output, dict):
                                 video_url = output.get("uri") or output.get("video")
                             if not video_url:
+                                logging.error(f"Invalid or empty output field: {json.dumps(output)}")
                                 raise ValueError("Runway returned empty video URL")
                             break
                         elif status == "FAILED":
