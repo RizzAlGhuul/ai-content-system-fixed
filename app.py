@@ -30,8 +30,7 @@ if not all([OPENAI_API_KEY, ELEVENLABS_API_KEY, RUNWAY_API_KEY, AYRSHARE_API_KEY
     logging.error("Missing one or more API keys in environment variables")
     raise ValueError("Missing API keys")
 
-openai_client = OpenAI(api_key=OPENAI_API_KEY)
-elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+openai_client = OpenAI(api_key=OPENAI_API_KEY)\nelevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
 
 TEMP_DIR = '/tmp/' if 'DYNO' in os.environ else ''
 
@@ -76,8 +75,8 @@ def generate_content(num_trends=1):
                     )
                     raw_content = response.choices[0].message.content or ""
                     raw_content = raw_content.strip()
-                    if raw_content.startswith("```json") or raw_content.startswith("```"):
-                        raw_content = raw_content.removeprefix("```json").removeprefix("```").removesuffix("```")
+                    if raw_content.startswith("```json") or raw_content.startswith("````"):
+                        raw_content = raw_content.removeprefix("```json").removeprefix("````").removesuffix("```")
                     data = json.loads(raw_content)
                 except Exception as e:
                     logging.error(f"OpenAI response parsing failed: {str(e)}")
@@ -132,6 +131,7 @@ def generate_content(num_trends=1):
 
             video_path = os.path.join(TEMP_DIR, "video.mp4")
             merged_path = os.path.join(TEMP_DIR, "merged.mp4")
+            video_downloaded = False
             try:
                 video_payload = {
                     "promptImage": image_url,
@@ -154,19 +154,19 @@ def generate_content(num_trends=1):
                             response = requests.get(video_url, timeout=30)
                             with open(video_path, "wb") as f:
                                 f.write(response.content)
+                            video_downloaded = True
                             break
                         elif status == "FAILED":
                             raise ValueError("Runway video generation failed")
                         time.sleep(5)
             except Exception as e:
                 logging.warning(f"Runway video fallback: {str(e)}")
-                video_path = None
 
             logging.info("Merging video and audio")
             try:
                 if not os.path.exists(audio_path):
                     raise FileNotFoundError("Missing audio file")
-                if not video_path or not os.path.exists(video_path):
+                if not video_downloaded or not os.path.exists(video_path):
                     raise FileNotFoundError("Missing or invalid video file")
                 video_clip = VideoFileClip(video_path)
                 audio_clip = AudioFileClip(audio_path).subclip(0, video_clip.duration)
@@ -194,8 +194,8 @@ def verify_quality(output_type, content):
             messages=[{"role": "user", "content": prompt}]
         )
         raw_content = response.choices[0].message.content.strip()
-        if raw_content.startswith("```json") or raw_content.startswith("```"):
-            raw_content = raw_content.removeprefix("```json").removeprefix("```").removesuffix("```")
+        if raw_content.startswith("```json") or raw_content.startswith("````"):
+            raw_content = raw_content.removeprefix("```json").removeprefix("````").removesuffix("```")
         result = json.loads(raw_content)
         return result.get('score', 5), result.get('feedback', '')
     except Exception as e:
