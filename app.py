@@ -49,7 +49,7 @@ TEMP_DIR = '/tmp/' if 'DYNO' in os.environ else ''
 # Scheduler for automated runs
 logging.info("Setting up scheduler...")
 scheduler = BackgroundScheduler()
-scheduler.add_job(lambda: generate_content(num_trends=3), 'cron', hour='8,16')
+scheduler.add_job(lambda: generate_content(num_trends=3), 'cron', hour='8')  # 3 videos/day at 8 AM UTC
 scheduler.start()
 logging.info("Scheduler initialized")
 
@@ -150,14 +150,14 @@ def generate_content(num_trends=1):
             headers = {
                 "Authorization": f"Bearer {RUNWAY_API_KEY}",
                 "Content-Type": "application/json",
-                "X-Runway-Version": "2024-11-06"  # Required per doc
+                "X-Runway-Version": "2024-11-06"
             }
             logging.info("Starting Runway image generation")
             image_payload = {
                 "promptText": script,
                 "model": "gen4_image",
                 "ratio": "720:1280",
-                "seed": 12345  # Fixed seed for consistency
+                "seed": 12345
             }
             logging.info(f"Runway image payload: {json.dumps(image_payload)}")
             image_url = None
@@ -170,7 +170,7 @@ def generate_content(num_trends=1):
                     poll_response = requests.get(f"https://api.runwayml.com/v1/tasks/{image_task_id}", headers=headers)
                     poll_response.raise_for_status()
                     task_data = poll_response.json()
-                    logging.info(f"Runway image task status: {task_data.get('status')}")
+                    logging.info(f"Runway image task status: {task_data}")
                     if task_data.get("status") == "SUCCEEDED":
                         image_url = task_data.get("output", [{}])[0]
                         break
@@ -189,7 +189,7 @@ def generate_content(num_trends=1):
             video_payload = {
                 "promptImage": image_url,
                 "promptText": script,
-                "model": "gen4_turbo",
+                "model": "gen3a_turbo",  # Changed to supported model
                 "ratio": "720:1280",
                 "seed": 12345
             }
@@ -203,7 +203,7 @@ def generate_content(num_trends=1):
                     poll_response = requests.get(f"https://api.runwayml.com/v1/tasks/{video_task_id}", headers=headers)
                     poll_response.raise_for_status()
                     task_data = poll_response.json()
-                    logging.info(f"Runway video task status: {task_data.get('status')}")
+                    logging.info(f"Runway video task status: {task_data}")
                     if task_data.get("status") == "SUCCEEDED":
                         video_url = task_data.get("output", [{}])[0]
                         break
@@ -243,9 +243,9 @@ def generate_content(num_trends=1):
 
             video_desc = f"Video based on script: {script}"
             video_score, video_feedback = verify_quality("video content", video_desc)
-            logging.info(f"Video quality score: {video_score}, feedback: {feedback}")
+            logging.info(f"Video quality score: {video_score}, feedback: {video_feedback}")
             if video_score < 7:
-                logging.warning(f"Low video quality ({score}/10), skipping post")
+                logging.warning(f"Low video quality ({video_score}/10), skipping post")
                 continue
 
             if os.path.getsize(merged_path) > 10 * 1024 * 1024:
