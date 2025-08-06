@@ -87,11 +87,22 @@ def generate_content(num_trends=1):
                 Output JSON: "script", "title", "description", "hashtags" (5).
                 Affiliate link: {AFFILIATE_LINK}
                 """
-                response = openai_client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                data = json.loads(response.choices[0].message.content)
+                try:
+                    response = openai_client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+                    raw_content = response.choices[0].message.content
+                    if not raw_content:
+                        raise ValueError("OpenAI returned empty content.")
+                    data = json.loads(raw_content)
+                except json.JSONDecodeError as e:
+                    logging.error(f"OpenAI response not valid JSON: {raw_content}")
+                    raise
+                except Exception as e:
+                    logging.error(f"OpenAI response parsing failed: {str(e)}")
+                    raise
+
                 script = data.get('script', '')[:1000]
                 title = data.get('title', 'Trend Video')
                 desc = data.get('description', '') + f"\n{AFFILIATE_LINK}"
