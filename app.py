@@ -95,6 +95,9 @@ def generate_content(num_trends=1):
                     raw_content = response.choices[0].message.content
                     if not raw_content:
                         raise ValueError("OpenAI returned empty content.")
+                    raw_content = raw_content.strip()
+                    if raw_content.startswith("```json") or raw_content.startswith("```"):
+                        raw_content = raw_content.removeprefix("```json").removeprefix("```").removesuffix("```")
                     data = json.loads(raw_content)
                 except json.JSONDecodeError as e:
                     logging.error(f"OpenAI response not valid JSON: {raw_content}")
