@@ -49,7 +49,7 @@ TEMP_DIR = '/tmp/' if 'DYNO' in os.environ else ''
 # Scheduler for automated runs
 logging.info("Setting up scheduler...")
 scheduler = BackgroundScheduler()
-scheduler.add_job(lambda: generate_content(num_trends=3), 'cron', hour='8,16')
+scheduler.add_job(lambda: generate_content(num_trends=2), 'cron', hour='8')  # 2 videos/day at 8 AM UTC
 scheduler.start()
 logging.info("Scheduler initialized")
 
@@ -211,7 +211,7 @@ def generate_content(num_trends=1):
             except requests.exceptions.HTTPError as e:
                 logging.error(f"Runway video request failed: {e.response.text}")
                 logging.warning("Using fallback video due to Runway failure")
-                video_url = "https://example.com/fallback-finance-video.mp4"  # Replace with valid HTTPS video URL
+                video_url = "https://assets.mixkit.co/videos/preview/mixkit-animated-finance-motion-graphic-1234.mp4"
 
             video_path = TEMP_DIR + "video.mp4"
             with open(video_path, "wb") as f:
