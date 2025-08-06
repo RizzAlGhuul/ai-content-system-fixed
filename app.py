@@ -1,57 +1,38 @@
+from flask import Flask, render_template, request, jsonify
 import os
-import requests
 import httpx
+import logging
 
-RUNWAY_API_KEY = os.getenv("RUNWAY_API_KEY")
+app = Flask(__name__)
 
-HEADERS = {
-    "Authorization": f"Bearer {RUNWAY_API_KEY}",
-    "Content-Type": "application/json"
-}
+@app.route("/")
+def index():
+    return render_template("index.html")
 
-def generate_runway_image(prompt):
+@app.route("/generate", methods=["GET"])
+def generate():
     try:
-        response = httpx.post(
-            "https://api.runwayml.com/v1/text_to_image",
-            headers=HEADERS,
-            json={
-                "prompt": prompt,
-                "width": 512,
-                "height": 512,
-                "num_inference_steps": 25,
-                "guidance_scale": 7.5
-            },
-            timeout=60
-        )
+        logging.info("Starting Runway image generation")
+        headers = {
+            "Authorization": f"Bearer {os.getenv('RUNWAY_API_KEY')}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "prompt": "a futuristic city with flying cars",
+            "width": 1024,
+            "height": 768
+        }
+        response = httpx.post("https://api.runwayml.com/v2/generate", headers=headers, json=payload)
         response.raise_for_status()
-        return response.json()
-    except httpx.HTTPStatusError as exc:
-        print(f"Runway image fallback: {exc.response.status_code} Client Error: {exc.response.text}")
-        return None
+        image_data = response.json()
+        logging.info("Runway image generation successful")
+        return jsonify(image_data)
+    except httpx.HTTPStatusError as e:
+        logging.warning(f"Runway fallback: {e.response.status_code} Client Error: {e.response.text}")
+        return jsonify({"error": "Runway generation failed"}), 500
+    except Exception as e:
+        logging.error(f"Unexpected error: {e}")
+        return jsonify({"error": "Unexpected server error"}), 500
 
-def generate_runway_video(prompt):
-    try:
-        response = httpx.post(
-            "https://api.runwayml.com/v1/video",
-            headers=HEADERS,
-            json={
-                "prompt": prompt,
-                "width": 512,
-                "height": 512,
-                "num_inference_steps": 30,
-                "num_frames": 16,
-                "guidance_scale": 10
-            },
-            timeout=120
-        )
-        response.raise_for_status()
-        return response.json()
-    except httpx.HTTPStatusError as exc:
-        print(f"Runway video fallback: {exc.response.status_code} Client Error: {exc.response.text}")
-        return None
-
-# You can then replace your usage logic with:
-
-prompt_text = "A futuristic city skyline at dusk"
-image_result = generate_runway_image(prompt_text)
-video_result = generate_runway_video(prompt_text)
+if __name__ == "__main__":
+    app.run(debug=True)
