@@ -77,7 +77,7 @@ def generate_content(num_trends=1):
                     raw_content = response.choices[0].message.content or ""
                     raw_content = raw_content.strip()
                     if raw_content.startswith("```json") or raw_content.startswith("````"):
-                        raw_content = raw_content.removeprefix("```json").removeprefix("````").removesuffix("```")
+                        raw_content = raw_content.removeprefix("```json")).removeprefix("````").removesuffix("```")
                     data = json.loads(raw_content)
                 except Exception as e:
                     logging.error(f"OpenAI response parsing failed: {str(e)}")
@@ -208,4 +208,13 @@ def verify_quality(output_type, content):
         )
         raw_content = response.choices[0].message.content.strip()
         if raw_content.startswith("```json") or raw_content.startswith("````"):
-            raw_content = raw_content.removeprefix("```json"
+            raw_content = raw_content.removeprefix("```json").removeprefix("````").removesuffix("```")
+        result = json.loads(raw_content)
+        return result.get('score', 5), result.get('feedback', '')
+    except Exception as e:
+        logging.warning(f"Quality check parse failed: {str(e)}")
+        return 5, "Failed to parse response"
+
+if __name__ == '__main__':
+    scheduler.start()
+    app.run(debug=False)
