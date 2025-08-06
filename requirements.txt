@@ -1,6 +1,6 @@
 Flask
 apscheduler
 uuid
-runwayml==0.4.0
+runwayml==3.10.0
 elevenlabs==1.0.0
 httpx
