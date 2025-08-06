@@ -1,106 +1,195 @@
-from flask import Flask, render_template, request, redirect, url_for, send_file
-import openai
-import requests
 import os
-from moviepy.editor import VideoFileClip, AudioFileClip, CompositeVideoClip
-from gtts import gTTS
-from io import BytesIO
+import requests
+import time
+import json
+import logging
+from flask import Flask, jsonify, render_template, request
+from openai import OpenAI
+from elevenlabs.client import ElevenLabs
+from elevenlabs import VoiceSettings
+from pytrends.request import TrendReq
+from dotenv import load_dotenv
+from moviepy.editor import VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip
+from datetime import datetime, timedelta
+from apscheduler.schedulers.background import BackgroundScheduler
+
+load_dotenv()
 
 app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
+logging.info("Starting app initialization...")
 
-# Set API keys from environment variables
-openai.api_key = os.getenv("OPENAI_API_KEY")
-RUNWAY_API_KEY = os.getenv("RUNWAY_API_KEY")
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY')
+RUNWAY_API_KEY = os.getenv('RUNWAY_API_KEY')
+AYRSHARE_API_KEY = os.getenv('AYRSHARE_API_KEY')
+NICHE = os.getenv('NICHE', 'personal finance')
+AFFILIATE_LINK = os.getenv('AFFILIATE_LINK', 'https://example.com/aff')
+
+missing_keys = []
+if not OPENAI_API_KEY:
+    missing_keys.append("OPENAI_API_KEY")
+if not ELEVENLABS_API_KEY:
+    missing_keys.append("ELEVENLABS_API_KEY")
+if not RUNWAY_API_KEY:
+    missing_keys.append("RUNWAY_API_KEY")
+if not AYRSHARE_API_KEY:
+    missing_keys.append("AYRSHARE_API_KEY")
+
+if missing_keys:
+    logging.error(f"Missing the following API keys: {', '.join(missing_keys)}")
+    raise ValueError("Missing required API keys")
+
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
+elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+
+TEMP_DIR = '/tmp/' if 'DYNO' in os.environ else ''
+
+scheduler = BackgroundScheduler()
+scheduler.add_job(lambda: generate_content(num_trends=3), 'cron', hour='8,16')
 
 @app.route('/')
-def index():
-    return redirect(url_for('generate_page'))
+def home():
+    return render_template('index.html')
 
-@app.route('/generate', methods=['GET'])
-def generate_page():
-    return render_template('generate.html')
+@app.route('/generate', methods=['GET', 'POST'])
+def generate_content(num_trends=1):
+    results = []
+    try:
+        logging.info("Starting content generation")
+        pytrends = TrendReq(hl='en-US', tz=360)
+        trends = []
+        try:
+            pytrends.build_payload(kw_list=[NICHE], cat=0, timeframe='now 1-d')
+            trends_df = pytrends.related_queries().get(NICHE, {}).get('top', None)
+            if trends_df is not None:
+                trends = trends_df['query'].tolist()
+        except Exception as e:
+            logging.warning(f"Trend fetch failed: {str(e)}")
+            trends = ["Investment tips 2025", "How to save money fast", "Passive income ideas"]
 
-@app.route('/generate_image', methods=['POST'])
-def generate_image():
-    prompt = request.form.get('prompt')
-    if not prompt:
-        return "No prompt provided.", 400
+        filtered_trends = [t for t in trends if NICHE.lower() in t.lower()] or ["Fallback trend in " + NICHE]
+        trends_to_use = filtered_trends[:num_trends]
 
-    headers = {
-        "Authorization": f"Bearer {RUNWAY_API_KEY}",
-        "Content-Type": "application/json"
-    }
+        for trend in trends_to_use:
+            logging.info(f"Processing trend: {trend}")
+            for _ in range(3):
+                prompt = f"""
+                Analyze '{trend}' in {NICHE} niche for short-form video. 
+                Output JSON: \"script\", \"title\", \"description\", \"hashtags\" (5).
+                Affiliate link: {AFFILIATE_LINK}
+                """
+                try:
+                    response = openai_client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+                    raw_content = response.choices[0].message.content or ""
+                    raw_content = raw_content.strip()
+                    if raw_content.startswith("```json") or raw_content.startswith("````"):
+                        raw_content = raw_content.removeprefix("```json").removeprefix("````").removesuffix("```")
+                    data = json.loads(raw_content)
+                except Exception as e:
+                    logging.error(f"OpenAI response parsing failed: {str(e)}")
+                    continue
 
-    data = {
-        "prompt": prompt,
-        "width": 1024,
-        "height": 768
-    }
+                script = data.get('script', '')[:1000]
+                title = data.get('title', 'Trend Video')
+                desc = data.get('description', '') + f"\n{AFFILIATE_LINK}"
+                hashtags = data.get('hashtags', [])
 
-    response = requests.post("https://api.runwayml.com/v1/generate/image", json=data, headers=headers)
+                score, feedback = verify_quality("script analysis", script + " " + desc)
+                if score >= 7:
+                    break
+            else:
+                continue
 
-    if response.status_code != 200:
-        return f"Runway API error: {response.text}", 500
+            audio_path = os.path.join(TEMP_DIR, "voiceover.mp3")
+            logging.info("Generating voiceover")
+            audio_stream = elevenlabs_client.text_to_speech.convert(
+                text=script,
+                voice_id="21m00Tcm4TlvDq8ikWAM",
+                model_id="eleven_turbo_v2",
+                voice_settings=VoiceSettings(stability=0.5, similarity_boost=0.75),
+                output_format="mp3_44100_128"
+            )
+            with open(audio_path, "wb") as f:
+                for chunk in audio_stream:
+                    f.write(chunk)
 
-    image_url = response.json().get("image_url")
-    return f"<h2>Generated Image</h2><img src='{image_url}' width='512'><br><a href='/generate'>Go Back</a>"
+            logging.info("Starting Runway image generation")
+            headers = {
+                "Authorization": f"Bearer {RUNWAY_API_KEY}",
+                "Content-Type": "application/json"
+            }
+            try:
+                image_payload = {
+                    "prompt": script,
+                    "width": 512,
+                    "height": 768,
+                    "model": "stable-diffusion-v1-5"
+                }
+                resp = requests.post("https://api.runwayml.com/gen/image", headers=headers, json=image_payload)
+                resp.raise_for_status()
+                image_url = resp.json().get("image") or "https://images.unsplash.com/photo-1600585154340-be6161a56a0c"
+            except Exception as e:
+                logging.warning(f"Runway fallback: {str(e)}")
+                image_url = "https://images.unsplash.com/photo-1600585154340-be6161a56a0c"
 
-@app.route('/generate_video', methods=['POST'])
-def generate_video():
-    topic = request.form.get('topic')
-    if not topic:
-        return "No topic provided.", 400
+            logging.info("Merging video and audio")
+            try:
+                video_path = os.path.join(TEMP_DIR, "video.mp4")
+                merged_path = os.path.join(TEMP_DIR, "merged.mp4")
 
-    # Step 1: Generate script using OpenAI
-    script_prompt = f"Write a compelling YouTube short script on: {topic}"
-    completion = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": script_prompt}]
-    )
-    script = completion.choices[0].message['content']
+                fallback_video = "https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4"
+                response = requests.get(fallback_video)
+                with open(video_path, "wb") as f:
+                    f.write(response.content)
 
-    # Step 2: Generate voiceover with ElevenLabs
-    voice_url = f"https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM"
-    headers = {
-        "xi-api-key": ELEVENLABS_API_KEY,
-        "Content-Type": "application/json"
-    }
-    data = {
-        "text": script,
-        "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
-    }
+                video_clip = VideoFileClip(video_path)
+                audio_clip = AudioFileClip(audio_path)
+                if audio_clip.duration < video_clip.duration:
+                    raise ValueError("Audio is shorter than video, cannot merge")
+                audio_clip = audio_clip.subclip(0, video_clip.duration)
+                caption_clip = TextClip("Trend: " + trend, fontsize=24, color='white').set_position('bottom').set_duration(video_clip.duration)
+                merged = CompositeVideoClip([video_clip.set_audio(audio_clip), caption_clip])
+                merged.write_videofile(merged_path, codec="libx264", audio_codec="aac")
+                os.remove(audio_path)
+                os.remove(video_path)
+                os.remove(merged_path)
+            except Exception as e:
+                logging.error(f"MoviePy merge failed: {str(e)}")
+                continue
 
-    audio_response = requests.post(voice_url, json=data, headers=headers)
-    if audio_response.status_code != 200:
-        return f"Voice generation failed: {audio_response.text}", 500
+            results.append({"trend": trend, "status": "success"})
 
-    audio_path = "static/audio.mp3"
-    with open(audio_path, "wb") as f:
-        f.write(audio_response.content)
+        return jsonify({"status": "success", "results": results})
 
-    # Step 3: Generate image (placeholder for background video)
-    img_response = requests.post("https://api.runwayml.com/v1/generate/image",
-                                 json={"prompt": topic, "width": 1024, "height": 768},
-                                 headers={"Authorization": f"Bearer {RUNWAY_API_KEY}", "Content-Type": "application/json"})
-    if img_response.status_code != 200:
-        return f"Image generation failed: {img_response.text}", 500
+    except Exception as e:
+        logging.error(f"Error in generate_content: {str(e)}")
+        return jsonify({"status": "error", "message": str(e)})
 
-    image_url = img_response.json().get("image_url")
-    image_data = requests.get(image_url).content
-    image_path = "static/frame.jpg"
-    with open(image_path, 'wb') as img_file:
-        img_file.write(image_data)
-
-    # Step 4: Create video with MoviePy
-    from moviepy.editor import ImageClip
-    image_clip = ImageClip(image_path).set_duration(10)
-    audio_clip = AudioFileClip(audio_path)
-    video = image_clip.set_audio(audio_clip)
-    video_path = "static/final_video.mp4"
-    video.write_videofile(video_path, fps=24)
-
-    return f"<h2>Generated Video</h2><video controls width='512'><source src='/{video_path}' type='video/mp4'></video><br><a href='/generate'>Go Back</a>"
+def verify_quality(output_type, content):
+    logging.info(f"Verifying quality for {output_type}")
+    prompt = f"Review this {output_type} for quality in {NICHE} niche: {content}. Score 1-10 for relevance, engagement, monetization potential. Output JSON: 'score' (int), 'feedback' (string)."
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw_content = response.choices[0].message.content.strip()
+        if raw_content.startswith("```json") or raw_content.startswith("````"):
+            raw_content = raw_content.removeprefix("```json").removeprefix("````").removesuffix("```")
+        result = json.loads(raw_content)
+        return result.get('score', 5), result.get('feedback', '')
+    except Exception as e:
+        logging.warning(f"Quality check parse failed: {str(e)}")
+        return 5, "Failed to parse response"
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    try:
+        scheduler.start()
+        logging.info("Scheduler started successfully.")
+        app.run(debug=False)
+    except Exception as e:
+        logging.critical(f"App failed to start: {str(e)}")
