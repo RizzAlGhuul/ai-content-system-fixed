@@ -66,7 +66,7 @@ def generate_content(num_trends=1):
             for _ in range(3):
                 prompt = f"""
                 Analyze '{trend}' in {NICHE} niche for short-form video. 
-                Output JSON: "script", "title", "description", "hashtags" (5).
+                Output JSON: \"script\", \"title\", \"description\", \"hashtags\" (5).
                 Affiliate link: {AFFILIATE_LINK}
                 """
                 try:
@@ -149,10 +149,16 @@ def generate_content(num_trends=1):
                         status = poll.json().get("status")
                         if status == "SUCCEEDED":
                             output = poll.json().get("output")
-                            video_url = output[0] if isinstance(output, list) else output.get("uri") or output.get("video")
-                            if not video_url:
-                                raise ValueError("Runway returned empty video URL")
+                            video_url = None
+                            if isinstance(output, list) and output:
+                                video_url = output[0].get("uri") or output[0].get("video")
+                            elif isinstance(output, dict):
+                                video_url = output.get("uri") or output.get("video")
+                            if not video_url or not video_url.startswith("http"):
+                                raise ValueError("Runway returned invalid video URL")
                             response = requests.get(video_url, timeout=30)
+                            if response.status_code != 200 or not response.content:
+                                raise ValueError(f"Video download failed from Runway: {video_url}")
                             with open(video_path, "wb") as f:
                                 f.write(response.content)
                             video_downloaded = True
@@ -170,10 +176,16 @@ def generate_content(num_trends=1):
                 if not video_downloaded or not os.path.exists(video_path):
                     raise FileNotFoundError("Missing or invalid video file")
                 video_clip = VideoFileClip(video_path)
-                audio_clip = AudioFileClip(audio_path).subclip(0, video_clip.duration)
+                audio_clip = AudioFileClip(audio_path)
+                if audio_clip.duration < video_clip.duration:
+                    raise ValueError("Audio is shorter than video, cannot merge")
+                audio_clip = audio_clip.subclip(0, video_clip.duration)
                 caption_clip = TextClip("Trend: " + trend, fontsize=24, color='white').set_position('bottom').set_duration(video_clip.duration)
                 merged = CompositeVideoClip([video_clip.set_audio(audio_clip), caption_clip])
                 merged.write_videofile(merged_path, codec="libx264", audio_codec="aac")
+                os.remove(audio_path)
+                os.remove(video_path)
+                os.remove(merged_path)
             except Exception as e:
                 logging.error(f"MoviePy merge failed: {str(e)}")
                 continue
@@ -196,13 +208,4 @@ def verify_quality(output_type, content):
         )
         raw_content = response.choices[0].message.content.strip()
         if raw_content.startswith("```json") or raw_content.startswith("````"):
-            raw_content = raw_content.removeprefix("```json").removeprefix("````").removesuffix("```")
-        result = json.loads(raw_content)
-        return result.get('score', 5), result.get('feedback', '')
-    except Exception as e:
-        logging.warning(f"Quality check parse failed: {str(e)}")
-        return 5, "Failed to parse response"
-
-if __name__ == '__main__':
-    scheduler.start()
-    app.run(debug=True)
+            raw_content = raw_content.removeprefix("```json"
