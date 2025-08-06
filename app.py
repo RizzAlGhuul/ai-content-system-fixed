@@ -172,7 +172,11 @@ def generate_content(num_trends=1):
                         poll = requests.get(f"https://api.runwayml.com/v1/tasks/{task_id}", headers=headers)
                         status = poll.json().get("status")
                         if status == "SUCCEEDED":
-                            video_url = poll.json().get("output", [{}])[0]
+                            data = poll.json()
+                            logging.info(f"Runway SUCCEEDED full response: {json.dumps(data)}")
+                            video_url = data.get("output", [{}])[0] if isinstance(data.get("output"), list) else data.get("output", {}).get("uri")
+                            if not video_url:
+                                raise ValueError("Runway returned empty video URL")
                             break
                         elif status == "FAILED":
                             break
@@ -188,7 +192,9 @@ def generate_content(num_trends=1):
             if not os.path.exists(audio_path):
                 raise FileNotFoundError("Missing audio file")
             try:
-                video_clip = VideoFileClip(video_path) if video_path else None
+                if not video_path or not os.path.exists(video_path):
+                    raise FileNotFoundError("Missing or invalid video file")
+                video_clip = VideoFileClip(video_path)
                 audio_clip = AudioFileClip(audio_path).subclip(0, video_clip.duration)
                 caption_clip = TextClip("Trend: " + trend, fontsize=24, color='white').set_position('bottom').set_duration(video_clip.duration)
                 merged = CompositeVideoClip([video_clip.set_audio(audio_clip), caption_clip])
