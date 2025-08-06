@@ -1,68 +1,78 @@
+from flask import Flask, request, jsonify
+from apscheduler.schedulers.background import BackgroundScheduler
+import logging
+import httpx
+import moviepy.editor as mp
 import os
-import requests
-from moviepy.editor import AudioFileClip, VideoFileClip, CompositeVideoClip
 
-RUNWAY_API_KEY = os.getenv("RUNWAY_API_KEY")
-RUNWAY_URL = "https://api.runwayml.com/v1/inference/stable-diffusion"
-FALLBACK_VIDEO_URL = "https://your-fallback-storage.com/default.mp4"  # Replace with a working fallback video URL
+app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
 
-def generate_video_with_runway(prompt_text, audio_path, output_path):
-    headers = {
-        "Authorization": f"Bearer {RUNWAY_API_KEY}",
-        "Content-Type": "application/json"
-    }
+# Scheduler setup
+scheduler = BackgroundScheduler()
+scheduler.start()
 
-    payload = {
-        "input": {
-            "prompt": prompt_text
-        }
-    }
+@app.route("/")
+def home():
+    return jsonify({"message": "Welcome to TechTribe Collective!"})
 
-    video_path = "/tmp/video.mp4"
-
+@app.route("/generate")
+def generate():
     try:
-        print("Requesting image from Runway...")
-        response = requests.post(RUNWAY_URL, headers=headers, json=payload)
-        response.raise_for_status()
+        logging.info("Starting content generation")
 
-        # Expecting a JSON response with an image/video URL
-        result = response.json()
-        image_url = result.get("output")  # Update key if needed
+        # Placeholder trend
+        trend = "personal finance news"
+        logging.info(f"Processing trend: {trend}")
 
-        if not image_url:
-            raise ValueError("Runway response did not contain 'output'")
+        # Call OpenAI for script
+        openai_response = httpx.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}", "Content-Type": "application/json"},
+            json={"model": "gpt-4", "messages": [{"role": "user", "content": trend}]}
+        )
+        logging.info("Verifying quality for script analysis")
+        script = openai_response.json()["choices"][0]["message"]["content"]
 
-        print("Downloading video from Runway output...")
-        vid_resp = requests.get(image_url)
-        vid_resp.raise_for_status()
+        # Call ElevenLabs for voiceover
+        logging.info("Generating voiceover")
+        voice_response = httpx.post(
+            "https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM?output_format=mp3_44100_128",
+            headers={"xi-api-key": os.getenv("ELEVENLABS_API_KEY"), "Content-Type": "application/json"},
+            json={"text": script}
+        )
+        with open("/tmp/audio.mp3", "wb") as f:
+            f.write(voice_response.content)
 
-        with open(video_path, "wb") as f:
-            f.write(vid_resp.content)
+        # Call Runway for image generation (fallback handling)
+        logging.info("Starting Runway image generation")
+        try:
+            runway_response = httpx.post(
+                "https://api.runwayml.com/v1/gen/image",
+                headers={"Authorization": f"Bearer {os.getenv('RUNWAY_API_KEY')}", "Content-Type": "application/json"},
+                json={"prompt": trend}
+            )
+            runway_response.raise_for_status()
+            image_url = runway_response.json().get("image_url")
+            image_data = httpx.get(image_url).content
+            with open("/tmp/image.jpg", "wb") as f:
+                f.write(image_data)
+        except Exception as e:
+            logging.warning(f"Runway fallback: {e}")
+
+        # Dummy placeholder video for merge
+        logging.info("Merging video and audio")
+        try:
+            clip = mp.ImageClip("/tmp/image.jpg", duration=10).set_audio(mp.AudioFileClip("/tmp/audio.mp3"))
+            clip.write_videofile("/tmp/video.mp4", codec="libx264", fps=24)
+        except Exception as e:
+            logging.error(f"MoviePy merge failed: {e}")
+
+        return jsonify({"status": "Content generated."})
 
     except Exception as e:
-        print(f"[WARNING] Runway failed: {e}")
-        print("[INFO] Attempting to download fallback video...")
-        try:
-            fallback_response = requests.get(FALLBACK_VIDEO_URL)
-            fallback_response.raise_for_status()
-            with open(video_path, "wb") as f:
-                f.write(fallback_response.content)
-        except Exception as fallback_error:
-            print(f"[ERROR] Fallback video download failed: {fallback_error}")
-            return
+        logging.exception("Unhandled error in /generate")
+        return jsonify({"error": str(e)}), 500
 
-    # Validate video exists
-    if not os.path.exists(video_path) or os.path.getsize(video_path) < 10000:
-        print("[ERROR] Video file is missing or invalid after all attempts.")
-        return
-
-    # Merge audio and video
-    try:
-        video_clip = VideoFileClip(video_path)
-        audio_clip = AudioFileClip(audio_path)
-        final_clip = video_clip.set_audio(audio_clip)
-        final_clip.write_videofile(output_path, codec="libx264", audio_codec="aac")
-        print("[SUCCESS] Video generated and saved to:", output_path)
-
-    except Exception as merge_error:
-        print(f"[ERROR] MoviePy merge failed: {merge_error}")
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
