@@ -189,12 +189,21 @@ def generate_content(num_trends=1):
             except Exception as e:
                 logging.warning(f"Runway video fallback: {str(e)}")
 
+            if not video_downloaded:
+                logging.warning("Using fallback video due to Runway failure")
+                fallback_url = "https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4"
+                response = requests.get(fallback_url)
+                with open(video_path, "wb") as f:
+                    f.write(response.content)
+                video_downloaded = True
+
             logging.info("Merging video and audio")
             try:
+                logging.info(f"Checking if video exists at {video_path}: {os.path.exists(video_path)}")
                 if not os.path.exists(audio_path):
                     raise FileNotFoundError("Missing audio file")
                 if not video_downloaded or not os.path.exists(video_path):
-                    raise FileNotFoundError("Missing or invalid video file")
+                    raise FileNotFoundError("Missing or invalid video file before merging")
                 video_clip = VideoFileClip(video_path)
                 audio_clip = AudioFileClip(audio_path)
                 if audio_clip.duration < video_clip.duration:
