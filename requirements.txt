@@ -1,8 +1,9 @@
-Flask
-apscheduler
-uuid
+Flask==3.1.1
+apscheduler==3.11.0
+uuid==1.30
 runwayml==3.10.0
 elevenlabs==1.0.0
 httpx
 gunicorn
 moviepy==1.0.3
+python-dotenv
