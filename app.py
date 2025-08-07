@@ -3,8 +3,9 @@ import uuid
 from flask import Flask, request, jsonify, send_file, render_template
 from flask_apscheduler import APScheduler
 from runwayml import RunwayML, TaskFailedError, TaskTimeoutError
-from elevenlabs import Voice, VoiceSettings, generate, save
-from moviepy.editor import AudioFileClip, VideoFileClip, CompositeVideoClip
+from elevenlabs.client import ElevenLabs
+from elevenlabs import VoiceSettings
+from moviepy.editor import AudioFileClip, VideoFileClip
 
 app = Flask(__name__)
 
@@ -14,6 +15,7 @@ client = RunwayML(api_key=os.getenv("RUNWAYML_API_SECRET"))
 # ElevenLabs API Key
 ELEVEN_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 
+# Scheduler setup
 scheduler = APScheduler()
 scheduler.init_app(app)
 scheduler.start()
@@ -44,7 +46,7 @@ def generate_image():
         return jsonify({'image_url': output.output[0]})
     except TaskFailedError as e:
         return jsonify({'error': f'Task failed: {str(e)}'}), 500
-    except TaskTimeoutError as e:
+    except TaskTimeoutError:
         return jsonify({'error': 'Task timed out'}), 504
 
 @app.route('/generate-video', methods=['POST'])
@@ -63,7 +65,7 @@ def generate_video():
         return jsonify({'video_url': output.output[0]})
     except TaskFailedError as e:
         return jsonify({'error': f'Task failed: {str(e)}'}), 500
-    except TaskTimeoutError as e:
+    except TaskTimeoutError:
         return jsonify({'error': 'Task timed out'}), 504
 
 @app.route('/generate-audio', methods=['POST'])
@@ -71,17 +73,18 @@ def generate_audio():
     data = request.json
     text = data.get('text', '')
 
-    audio = generate(
+    client_11 = ElevenLabs(api_key=ELEVEN_API_KEY)
+
+    audio = client_11.generate(
         text=text,
-        voice=Voice(
-            voice_id="EXAVITQu4vr4xnSDxMaL",
-            settings=VoiceSettings(stability=0.5, similarity_boost=0.75)
-        ),
-        api_key=ELEVEN_API_KEY
+        voice="Rachel",  # Replace with desired voice name or ID
+        model="eleven_multilingual_v2",
+        voice_settings=VoiceSettings(stability=0.5, similarity_boost=0.75)
     )
 
     filename = f"{uuid.uuid4()}.mp3"
-    save(audio, filename)
+    with open(filename, "wb") as f:
+        f.write(audio)
 
     scheduler.add_job(id=filename, func=lambda: cleanup_file(filename), trigger='date', run_date=None, seconds=300)
 
@@ -96,10 +99,10 @@ def merge_audio_video():
     try:
         video = VideoFileClip(video_path)
         audio = AudioFileClip(audio_path)
-        video = video.set_audio(audio)
+        final = video.set_audio(audio)
 
         output_path = f"merged_{uuid.uuid4()}.mp4"
-        video.write_videofile(output_path, codec='libx264', audio_codec='aac')
+        final.write_videofile(output_path, codec='libx264', audio_codec='aac')
 
         scheduler.add_job(id=output_path, func=lambda: cleanup_file(output_path), trigger='date', run_date=None, seconds=300)
 
