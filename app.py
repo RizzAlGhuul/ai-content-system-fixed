@@ -1,109 +1,111 @@
 import os
 import uuid
-import base64
-import tempfile
-import logging
-from flask import Flask, render_template, request, send_file
-from apscheduler.schedulers.background import BackgroundScheduler
+from flask import Flask, request, jsonify, send_file, render_template
+from flask_apscheduler import APScheduler
+from runwayml import RunwayML, TaskFailedError, TaskTimeoutError
+from elevenlabs import Voice, VoiceSettings, generate, save
 from moviepy.editor import AudioFileClip, VideoFileClip, CompositeVideoClip
-from runwayml import RunwayML, TaskFailedError
-from elevenlabs.client import ElevenLabs
-from elevenlabs import Voice, VoiceSettings
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-runway_client = RunwayML()
-elevenlabs_client = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
 
-TEMP_DIR = tempfile.gettempdir()
+# Set up RunwayML with API key from environment variable
+client = RunwayML(api_key=os.getenv("RUNWAYML_API_SECRET"))
 
-def generate_image(prompt_text, ratio="1280:720"):
+# ElevenLabs API Key
+ELEVEN_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+
+scheduler = APScheduler()
+scheduler.init_app(app)
+scheduler.start()
+
+def cleanup_file(filepath):
     try:
-        task = runway_client.text_to_image.create(
-            model="gen4_image",
-            prompt_text=prompt_text,
-            ratio=ratio
-        )
-        result = task.wait_for_task_output(timeout=300)
-        return result.output[0] if result and result.output else None
-    except TaskFailedError as e:
-        logger.error("Image generation failed: %s", e.task_details)
-        return None
-
-def generate_video(image_url):
-    try:
-        task = runway_client.image_to_video.create(
-            model="gen2",
-            input_image_url=image_url
-        )
-        result = task.wait_for_task_output(timeout=300)
-        return result.output[0] if result and result.output else None
-    except TaskFailedError as e:
-        logger.error("Video generation failed: %s", e.task_details)
-        return None
-
-def generate_voiceover(text):
-    try:
-        audio = elevenlabs_client.text_to_speech.convert(
-            voice=Voice(voice_id="21m00Tcm4TlvDq8ikWAM"),
-            text=text,
-            model="eleven_multilingual_v2",
-            voice_settings=VoiceSettings(stability=0.5, similarity_boost=0.5)
-        )
-        audio_path = os.path.join(TEMP_DIR, f"voice_{uuid.uuid4()}.mp3")
-        with open(audio_path, "wb") as f:
-            f.write(audio)
-        return audio_path
+        if os.path.exists(filepath):
+            os.remove(filepath)
     except Exception as e:
-        logger.error("Voiceover generation failed: %s", e)
-        return None
+        print(f"Cleanup error: {e}")
 
-def merge_audio_video(video_url, audio_path):
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/generate-image', methods=['POST'])
+def generate_image():
+    data = request.json
+    prompt = data.get('prompt', '')
+
     try:
-        video_path = os.path.join(TEMP_DIR, f"video_{uuid.uuid4()}.mp4")
-        video_response = runway_client._http_client.get(video_url)
-        with open(video_path, "wb") as f:
-            f.write(video_response.content)
+        image_task = client.text_to_image.create(
+            model='gen4_image',
+            prompt_text=prompt,
+            ratio='16:9'
+        )
+        output = image_task.wait_for_task_output(timeout=300)
+        return jsonify({'image_url': output.output[0]})
+    except TaskFailedError as e:
+        return jsonify({'error': f'Task failed: {str(e)}'}), 500
+    except TaskTimeoutError as e:
+        return jsonify({'error': 'Task timed out'}), 504
 
-        final_output = os.path.join(TEMP_DIR, f"final_{uuid.uuid4()}.mp4")
-        video_clip = VideoFileClip(video_path)
-        audio_clip = AudioFileClip(audio_path)
-        final_clip = video_clip.set_audio(audio_clip)
-        final_clip.write_videofile(final_output, codec="libx264", audio_codec="aac")
-        return final_output
+@app.route('/generate-video', methods=['POST'])
+def generate_video():
+    data = request.json
+    image_url = data.get('image_url')
+    prompt = data.get('prompt', '')
+
+    try:
+        video_task = client.image_to_video.create(
+            model='gen2',
+            image_url=image_url,
+            prompt_text=prompt
+        )
+        output = video_task.wait_for_task_output(timeout=300)
+        return jsonify({'video_url': output.output[0]})
+    except TaskFailedError as e:
+        return jsonify({'error': f'Task failed: {str(e)}'}), 500
+    except TaskTimeoutError as e:
+        return jsonify({'error': 'Task timed out'}), 504
+
+@app.route('/generate-audio', methods=['POST'])
+def generate_audio():
+    data = request.json
+    text = data.get('text', '')
+
+    audio = generate(
+        text=text,
+        voice=Voice(
+            voice_id="EXAVITQu4vr4xnSDxMaL",
+            settings=VoiceSettings(stability=0.5, similarity_boost=0.75)
+        ),
+        api_key=ELEVEN_API_KEY
+    )
+
+    filename = f"{uuid.uuid4()}.mp3"
+    save(audio, filename)
+
+    scheduler.add_job(id=filename, func=lambda: cleanup_file(filename), trigger='date', run_date=None, seconds=300)
+
+    return send_file(filename, as_attachment=True)
+
+@app.route('/merge', methods=['POST'])
+def merge_audio_video():
+    data = request.json
+    video_path = data.get('video_path')
+    audio_path = data.get('audio_path')
+
+    try:
+        video = VideoFileClip(video_path)
+        audio = AudioFileClip(audio_path)
+        video = video.set_audio(audio)
+
+        output_path = f"merged_{uuid.uuid4()}.mp4"
+        video.write_videofile(output_path, codec='libx264', audio_codec='aac')
+
+        scheduler.add_job(id=output_path, func=lambda: cleanup_file(output_path), trigger='date', run_date=None, seconds=300)
+
+        return send_file(output_path, as_attachment=True)
     except Exception as e:
-        logger.error("Merging audio and video failed: %s", e)
-        return None
+        return jsonify({'error': str(e)}), 500
 
-@app.route("/")
-def home():
-    return render_template("index.html")
-
-@app.route("/generate")
-def generate():
-    logger.info("Starting content generation")
-    prompt = request.args.get("prompt", "A futuristic city skyline at dusk")
-    script_text = f"This is a generated video about: {prompt}"
-
-    image_url = generate_image(prompt)
-    if not image_url:
-        return "Image generation failed", 500
-
-    video_url = generate_video(image_url)
-    if not video_url:
-        return "Video generation failed", 500
-
-    voice_path = generate_voiceover(script_text)
-    if not voice_path:
-        return "Voiceover generation failed", 500
-
-    final_path = merge_audio_video(video_url, voice_path)
-    if not final_path:
-        return "Video merge failed", 500
-
-    return send_file(final_path, as_attachment=True)
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     app.run(debug=True)
