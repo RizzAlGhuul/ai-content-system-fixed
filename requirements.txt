@@ -7,3 +7,4 @@ httpx
 gunicorn
 moviepy==1.0.3
 python-dotenv
+Flask-APScheduler==1.13.1
