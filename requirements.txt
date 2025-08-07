@@ -3,5 +3,5 @@ flask_apscheduler>=1.12
 gunicorn>=21.2
 runwayml>=3.10
 elevenlabs>=1.0
-moviepy>=1.0
+moviepy>=1.0.3
 httpx>=0.27
